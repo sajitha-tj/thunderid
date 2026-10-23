@@ -22,6 +22,9 @@ const (
 	// "agent" for every agent. It is set only when the agent is created and carried forward on every
 	// update, so writes to an agent's system attributes must go through the agent service.
 	fieldKind = "kind"
+	// filterAttributeName is the name schema attribute, the one schema attribute a list filter can combine with
+	// the kind and the owner.
+	filterAttributeName = "name"
 )
 
 // Defaults for the server-config "personalAgent" section.

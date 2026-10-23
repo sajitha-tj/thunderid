@@ -360,13 +360,27 @@ func (s *agentService) GetAgentList(ctx context.Context, limit, offset int,
 func (s *agentService) listAllAgents(ctx context.Context, limit, offset int,
 	filters map[string]interface{}, includeDisplay bool) (
 	*model.AgentListResponse, *tidcommon.ServiceError) {
-	totalCount, err := s.entityService.GetEntityListCount(ctx, providers.EntityCategoryAgent, filters)
+	sysQuery := systemAttributeQuery(filters)
+	var totalCount int
+	var err error
+	if sysQuery != nil {
+		totalCount, err = s.entityService.GetEntityListCountBySystemAttributes(
+			ctx, providers.EntityCategoryAgent, *sysQuery)
+	} else {
+		totalCount, err = s.entityService.GetEntityListCount(ctx, providers.EntityCategoryAgent, filters)
+	}
 	if err != nil {
 		s.logger.Error(ctx, "Failed to get agent list count", log.Error(err))
 		return nil, &tidcommon.InternalServerError
 	}
 
-	entities, err := s.entityService.GetEntityList(ctx, providers.EntityCategoryAgent, limit, offset, filters)
+	var entities []providers.Entity
+	if sysQuery != nil {
+		entities, err = s.entityService.GetEntityListBySystemAttributes(
+			ctx, providers.EntityCategoryAgent, *sysQuery, limit, offset)
+	} else {
+		entities, err = s.entityService.GetEntityList(ctx, providers.EntityCategoryAgent, limit, offset, filters)
+	}
 	if err != nil {
 		s.logger.Error(ctx, "Failed to get agent list", log.Error(err))
 		return nil, &tidcommon.InternalServerError
@@ -384,21 +398,54 @@ func (s *agentService) listAgentsByOUIDs(ctx context.Context, ouIDs []string, li
 		return s.buildListResponse(ctx, []providers.Entity{}, 0, limit, offset, includeDisplay), nil
 	}
 
-	totalCount, err := s.entityService.GetEntityListCountByOUIDs(
-		ctx, providers.EntityCategoryAgent, ouIDs, filters)
+	sysQuery := systemAttributeQuery(filters)
+	var totalCount int
+	var err error
+	if sysQuery != nil {
+		totalCount, err = s.entityService.GetEntityListCountBySystemAttributesAndOUIDs(
+			ctx, providers.EntityCategoryAgent, *sysQuery, ouIDs)
+	} else {
+		totalCount, err = s.entityService.GetEntityListCountByOUIDs(
+			ctx, providers.EntityCategoryAgent, ouIDs, filters)
+	}
 	if err != nil {
 		s.logger.Error(ctx, "Failed to get agent list count", log.Error(err))
 		return nil, &tidcommon.InternalServerError
 	}
 
-	entities, err := s.entityService.GetEntityListByOUIDs(
-		ctx, providers.EntityCategoryAgent, ouIDs, limit, offset, filters)
+	var entities []providers.Entity
+	if sysQuery != nil {
+		entities, err = s.entityService.GetEntityListBySystemAttributesAndOUIDs(
+			ctx, providers.EntityCategoryAgent, *sysQuery, ouIDs, limit, offset)
+	} else {
+		entities, err = s.entityService.GetEntityListByOUIDs(
+			ctx, providers.EntityCategoryAgent, ouIDs, limit, offset, filters)
+	}
 	if err != nil {
 		s.logger.Error(ctx, "Failed to get agent list", log.Error(err))
 		return nil, &tidcommon.InternalServerError
 	}
 
 	return s.buildListResponse(ctx, entities, totalCount, limit, offset, includeDisplay), nil
+}
+
+// systemAttributeQuery returns the lookup for a filter on the kind or the owner, which are matched against the
+// agents' system attributes, with the rest of the filter on the schema attributes. It returns nil for a
+// filter on schema attributes only.
+func systemAttributeQuery(filters map[string]interface{}) *entity.SystemAttributeQuery {
+	sysAttrs := map[string]interface{}{}
+	attrs := map[string]interface{}{}
+	for key, value := range filters {
+		if key == fieldKind || key == fieldOwner {
+			sysAttrs[key] = value
+		} else {
+			attrs[key] = value
+		}
+	}
+	if len(sysAttrs) == 0 {
+		return nil
+	}
+	return &entity.SystemAttributeQuery{SystemAttributes: sysAttrs, Attributes: attrs}
 }
 
 // UpdateAgent applies a full-replacement update to the agent.

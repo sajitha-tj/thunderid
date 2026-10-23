@@ -1873,12 +1873,15 @@ components:
       name: filter
       required: false
       description: |
-        Filter agents by a custom attribute value. Only keys inside the `attributes` JSON
-        object are filterable, including `name`; system fields (`description`, `type`, `ouId`,
-        `owner`, `clientId`) are not supported.
+        Filter agents by a custom attribute value, by `kind`, or by `owner`. Keys inside the
+        `attributes` JSON object are filterable, including `name`; `kind` and `owner` match the
+        agent's kind and owner. Other system fields (`description`, `type`, `ouId`, `clientId`)
+        are not supported.
         Supported operators: `eq`.
         Format: `attribute operator "value"`. The value must be wrapped in double quotes.
-        Example: `name eq "Calendar Agent"`.
+        Terms on `kind`, `owner`, and `name` can be joined with `and`, each at most once.
+        Examples: `name eq "Calendar Agent"`,
+        `kind eq "personal-assistant" and owner eq "e1b6ba6c-deb2-4d24-87b0-bbf79fa4487c"`.
       schema:
         type: string
 
