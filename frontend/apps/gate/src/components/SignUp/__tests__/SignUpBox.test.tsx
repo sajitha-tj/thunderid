@@ -66,6 +66,7 @@ interface MockSignUpRenderProps {
   handleSubmit: typeof mockHandleSubmit;
   isLoading: boolean;
   components: unknown[];
+  additionalData?: Record<string, unknown>;
 }
 
 // Factory function to create fresh mock props for each test
@@ -181,6 +182,22 @@ describe('SignUpBox', () => {
     });
     render(<SignUpBox />);
     expect(screen.getByText('Create Account')).toBeInTheDocument();
+  });
+
+  it('shows the values a COPYABLE_TEXT component takes from the flow additional data', () => {
+    mockSignUpRenderProps = createMockSignUpRenderProps({
+      components: [
+        {
+          id: 'copyable-1',
+          type: 'COPYABLE_TEXT',
+          label: 'Client ID',
+          source: 'clientId',
+        },
+      ],
+      additionalData: {clientId: 'agent-client-id'},
+    });
+    render(<SignUpBox />);
+    expect(screen.getByText('agent-client-id')).toBeInTheDocument();
   });
 
   it('renders TEXT_INPUT component', () => {

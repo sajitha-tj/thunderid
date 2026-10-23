@@ -138,7 +138,17 @@ export default function SignUpBox(): JSX.Element {
       logoDisplay={!isDesignEnabled ? {xs: 'flex', md: 'none'} : {display: 'none'}}
     >
       <SignUp afterSignUpUrl={afterSignUpUrl}>
-        {({values, fieldErrors, error, touched, handleInputChange, handleSubmit, isLoading, components}: any) => {
+        {({
+          values,
+          fieldErrors,
+          error,
+          touched,
+          handleInputChange,
+          handleSubmit,
+          isLoading,
+          components,
+          additionalData,
+        }: any) => {
           const renderComponents = components as EmbeddedFlowComponent[] | undefined;
 
           if (!renderComponents) {
@@ -206,6 +216,7 @@ export default function SignUpBox(): JSX.Element {
                       touched={mergedTouched}
                       fieldErrors={mergedErrors}
                       isLoading={isLoading as boolean}
+                      additionalData={additionalData as Record<string, unknown> | undefined}
                       resolve={resolve}
                       onInputChange={wrappedInputChange}
                       onSubmit={(action, inputs) => {
