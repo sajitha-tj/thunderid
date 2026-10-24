@@ -10,6 +10,8 @@ import (
 
 const (
 	agentBasePath = "/agents"
+	// ownedAgentsBasePath is where an owner lists their own agents.
+	ownedAgentsBasePath = "/users/me/agents"
 )
 
 // Field keys stored in the entity SystemAttributes JSON blob.

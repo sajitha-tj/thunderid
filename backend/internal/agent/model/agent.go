@@ -137,6 +137,39 @@ type BasicAgentResponse struct {
 	Kind providers.AgentKind `json:"kind,omitempty"`
 }
 
+// OwnedAgentResponse is an agent as its owner sees it. It carries no owner (the caller), no flow settings, and
+// no credential material.
+type OwnedAgentResponse struct {
+	ID                      string                            `json:"id"`
+	Kind                    providers.AgentKind               `json:"kind,omitempty"`
+	Description             string                            `json:"description,omitempty"`
+	LogoURL                 string                            `json:"logoUrl,omitempty"`
+	ClientID                string                            `json:"clientId,omitempty"`
+	Attributes              json.RawMessage                   `json:"attributes,omitempty"`
+	GrantTypes              []providers.GrantType             `json:"grantTypes,omitempty"`
+	RedirectURIs            []string                          `json:"redirectUris,omitempty"`
+	TokenEndpointAuthMethod providers.TokenEndpointAuthMethod `json:"tokenEndpointAuthMethod,omitempty"`
+	CertificateType         providers.CertificateType         `json:"certificateType,omitempty"`
+}
+
+// UpdateOwnedAgentRequest is the body of an owner's update of their agent: the whole part the owner may change.
+// Attributes, grant types and redirect URIs are required; a description left out is cleared.
+type UpdateOwnedAgentRequest struct {
+	Description  string                `json:"description,omitempty"`
+	Attributes   json.RawMessage       `json:"attributes,omitempty"`
+	GrantTypes   []providers.GrantType `json:"grantTypes,omitempty"`
+	RedirectURIs []string              `json:"redirectUris,omitempty"`
+}
+
+// OwnedAgentListResponse is the paginated list of the caller's agents.
+type OwnedAgentListResponse struct {
+	TotalResults int                  `json:"totalResults"`
+	StartIndex   int                  `json:"startIndex"`
+	Count        int                  `json:"count"`
+	Agents       []OwnedAgentResponse `json:"agents"`
+	Links        []utils.Link         `json:"links"`
+}
+
 // AgentListResponse is the paginated list response.
 type AgentListResponse struct {
 	TotalResults int                  `json:"totalResults"`

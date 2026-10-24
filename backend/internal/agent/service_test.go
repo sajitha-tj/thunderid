@@ -3852,6 +3852,401 @@ func (suite *AgentServiceTestSuite) TestGetAgentList_NoAccessibleOUs() {
 		mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
 
+// The owner reads their agent without an administrator check, and sees only what an owner may see.
+func (suite *AgentServiceTestSuite) TestGetOwnedAgent_Success() {
+	svc, mockEntity, mockInbound, _, _ := suite.setupService()
+	agentEntity := withKind(buildAgentEntityFixture(testAgentName, "desc", "alice", "cid-123"),
+		providers.AgentKindPersonalAssistant)
+	clearMockCalls(mockEntity, "GetEntityProfile")
+	mockEntity.On("GetEntityProfile", mock.Anything, testAgentID).Return(agentEntity, nil)
+	clearMockCalls(mockInbound, "GetInboundClientByEntityID")
+	mockInbound.On("GetInboundClientByEntityID", mock.Anything, testAgentID).
+		Return(&inboundmodel.InboundClient{ID: testAgentID, AuthFlowID: "flow-1"}, nil)
+	clearMockCalls(mockInbound, "GetOAuthProfileByEntityID")
+	mockInbound.On("GetOAuthProfileByEntityID", mock.Anything, testAgentID).Return(&providers.OAuthProfile{
+		GrantTypes:              []string{"authorization_code"},
+		RedirectURIs:            []string{"https://a.example.com/cb"},
+		TokenEndpointAuthMethod: string(providers.TokenEndpointAuthMethodPrivateKeyJWT),
+	}, nil)
+	clearMockCalls(mockInbound, "GetCertificate")
+	mockInbound.On("GetCertificate", mock.Anything, cert.CertificateReferenceTypeOAuthApp, "cid-123").
+		Return(&providers.Certificate{Type: providers.CertificateTypeJWKSURI, Value: "https://a.example.com/jwks"},
+			(*inboundclient.CertOperationError)(nil))
+
+	resp, svcErr := svc.GetOwnedAgent(context.Background(), "alice", testAgentID,
+		providers.AgentKindPersonalAssistant)
+
+	suite.Require().Nil(svcErr)
+	assert.Equal(suite.T(), &model.OwnedAgentResponse{
+		ID:                      testAgentID,
+		Kind:                    providers.AgentKindPersonalAssistant,
+		Description:             "desc",
+		ClientID:                "cid-123",
+		Attributes:              agentEntity.Attributes,
+		GrantTypes:              []providers.GrantType{providers.GrantTypeAuthorizationCode},
+		RedirectURIs:            []string{"https://a.example.com/cb"},
+		TokenEndpointAuthMethod: providers.TokenEndpointAuthMethodPrivateKeyJWT,
+		CertificateType:         providers.CertificateTypeJWKSURI,
+	}, resp)
+}
+
+// Anything but the owner's agent of the kind asked for is not found, so the answer reveals nothing.
+func (suite *AgentServiceTestSuite) TestGetOwnedAgent_NotFound() {
+	personal := withKind(buildAgentEntityFixture(testAgentName, "", "alice", ""),
+		providers.AgentKindPersonalAssistant)
+	ordinary := buildAgentEntityFixture(testAgentName, "", "alice", "")
+	notAnAgent := withKind(buildAgentEntityFixture(testAgentName, "", "alice", ""),
+		providers.AgentKindPersonalAssistant)
+	notAnAgent.Category = providers.EntityCategoryUser
+	cases := []struct {
+		name   string
+		owner  string
+		entity *providers.Entity
+		err    error
+	}{
+		{"another owner's agent", "bob", personal, nil},
+		{"an agent of another kind", "alice", ordinary, nil},
+		{"not an agent", "alice", notAnAgent, nil},
+		{"missing", "alice", nil, entity.ErrEntityNotFound},
+		{"no owner", "", personal, nil},
+	}
+	for _, tc := range cases {
+		suite.Run(tc.name, func() {
+			svc, mockEntity, _, _, _ := suite.setupService()
+			clearMockCalls(mockEntity, "GetEntityProfile")
+			mockEntity.On("GetEntityProfile", mock.Anything, testAgentID).Maybe().Return(tc.entity, tc.err)
+
+			_, svcErr := svc.GetOwnedAgent(context.Background(), tc.owner, testAgentID,
+				providers.AgentKindPersonalAssistant)
+
+			suite.Require().NotNil(svcErr)
+			assert.Equal(suite.T(), ErrorAgentNotFound.Code, svcErr.Code)
+		})
+	}
+}
+
+// The owner's list comes from the indexed owner and kind lookup across all OUs, paginated like /agents.
+func (suite *AgentServiceTestSuite) TestGetOwnedAgents() {
+	svc, mockEntity, _, _, _ := suite.setupService()
+	want := entity.SystemAttributeQuery{SystemAttributes: map[string]interface{}{
+		fieldOwner: "alice", fieldKind: string(providers.AgentKindPersonalAssistant),
+	}}
+	mockEntity.On("GetEntityListCountBySystemAttributes", mock.Anything, providers.EntityCategoryAgent, want).
+		Return(3, nil).Once()
+	mockEntity.On("GetEntityListBySystemAttributes", mock.Anything, providers.EntityCategoryAgent, want, 2, 1).
+		Return([]providers.Entity{*withKind(buildAgentEntityFixture(testAgentName, "", "alice", ""),
+			providers.AgentKindPersonalAssistant)}, nil).Once()
+
+	resp, svcErr := svc.GetOwnedAgents(context.Background(), "alice", providers.AgentKindPersonalAssistant, 2, 1)
+
+	suite.Require().Nil(svcErr)
+	assert.Equal(suite.T(), 3, resp.TotalResults)
+	assert.Equal(suite.T(), 2, resp.StartIndex)
+	suite.Require().Len(resp.Agents, 1)
+	assert.Equal(suite.T(), testAgentID, resp.Agents[0].ID)
+	assert.NotEmpty(suite.T(), resp.Links)
+}
+
+func (suite *AgentServiceTestSuite) TestGetOwnedAgents_Errors() {
+	svc, _, _, _, _ := suite.setupService()
+	_, svcErr := svc.GetOwnedAgents(context.Background(), "alice", providers.AgentKindPersonalAssistant, -1, 0)
+	suite.Require().NotNil(svcErr)
+	assert.Equal(suite.T(), tidcommon.ClientErrorType, svcErr.Type)
+
+	svc, mockEntity, _, _, _ := suite.setupService()
+	mockEntity.On("GetEntityListCountBySystemAttributes", mock.Anything, mock.Anything, mock.Anything).
+		Return(0, errors.New("store down")).Once()
+	_, svcErr = svc.GetOwnedAgents(context.Background(), "alice", providers.AgentKindPersonalAssistant, 0, 0)
+	suite.Require().NotNil(svcErr)
+	assert.Equal(suite.T(), tidcommon.InternalServerError.Code, svcErr.Code)
+
+	svc, mockEntity, _, _, _ = suite.setupService()
+	mockEntity.On("GetEntityListCountBySystemAttributes", mock.Anything, mock.Anything, mock.Anything).
+		Return(1, nil).Once()
+	mockEntity.On("GetEntityListBySystemAttributes", mock.Anything, mock.Anything, mock.Anything, 30, 0).
+		Return(nil, errors.New("store down")).Once()
+	_, svcErr = svc.GetOwnedAgents(context.Background(), "alice", providers.AgentKindPersonalAssistant, 0, 0)
+	suite.Require().NotNil(svcErr)
+	assert.Equal(suite.T(), tidcommon.InternalServerError.Code, svcErr.Code)
+}
+
+// setupOwnedAgentUpdate returns a service with alice's personal agent stored, with the authorization code grant.
+func (suite *AgentServiceTestSuite) setupOwnedAgentUpdate(certificate *inboundmodel.Certificate) (
+	*agentService, *entitymock.EntityServiceInterfaceMock, *inboundclientmock.InboundClientServiceInterfaceMock) {
+	svc, mockEntity, mockInbound, _, _ := suite.setupService()
+	owned := withKind(buildAgentEntityFixture(testAgentName, "desc", "alice", "cid-123"),
+		providers.AgentKindPersonalAssistant)
+	clearMockCalls(mockEntity, "GetEntityProfile")
+	mockEntity.On("GetEntityProfile", mock.Anything, testAgentID).Maybe().Return(owned, nil)
+	clearMockCalls(mockInbound, "GetInboundClientByEntityID")
+	mockInbound.On("GetInboundClientByEntityID", mock.Anything, testAgentID).Maybe().
+		Return(&inboundmodel.InboundClient{ID: testAgentID, AuthFlowID: "flow-1"}, nil)
+	clearMockCalls(mockInbound, "GetOAuthProfileByEntityID")
+	mockInbound.On("GetOAuthProfileByEntityID", mock.Anything, testAgentID).Maybe().Return(&providers.OAuthProfile{
+		GrantTypes:              []string{string(providers.GrantTypeAuthorizationCode)},
+		ResponseTypes:           []string{string(providers.ResponseTypeCode)},
+		RedirectURIs:            []string{"https://a.example.com/cb"},
+		PKCERequired:            true,
+		TokenEndpointAuthMethod: string(providers.TokenEndpointAuthMethodClientSecretBasic),
+	}, nil)
+	clearMockCalls(mockInbound, "GetCertificate")
+	mockInbound.On("GetCertificate", mock.Anything, cert.CertificateReferenceTypeOAuthApp, "cid-123").Maybe().
+		Return(certificate, (*inboundclient.CertOperationError)(nil))
+	return svc, mockEntity, mockInbound
+}
+
+// ownedAgentUpdate returns a full owner update with the given grant types and redirect URIs.
+func ownedAgentUpdate(grants []providers.GrantType, redirectURIs []string) *model.UpdateOwnedAgentRequest {
+	return &model.UpdateOwnedAgentRequest{
+		Description:  "new",
+		Attributes:   json.RawMessage(`{"name":"renamed"}`),
+		GrantTypes:   grants,
+		RedirectURIs: redirectURIs,
+	}
+}
+
+// The update replaces the editable part: the attributes, the OAuth profile's grants and redirect URIs, and the
+// description. Without the authorization code grant, response types and PKCE go; the stored key is kept, and
+// the description is written with the owner, client ID and kind it had.
+func (suite *AgentServiceTestSuite) TestUpdateOwnedAgent_ReplacesTheEditablePart() {
+	key := &inboundmodel.Certificate{Type: providers.CertificateTypeJWKSURI, Value: "https://a.example.com/jwks"}
+	svc, mockEntity, mockInbound := suite.setupOwnedAgentUpdate(key)
+	req := ownedAgentUpdate([]providers.GrantType{providers.GrantTypeCIBA, providers.GrantTypeRefreshToken},
+		[]string{"https://b.example.com/cb"})
+	mockEntity.On("UpdateAttributes", mock.Anything, testAgentID, req.Attributes).Return(nil).Once()
+	var sysAttrs json.RawMessage
+	mockEntity.On("UpdateSystemAttributes", mock.Anything, testAgentID, mock.Anything).
+		Run(func(args mock.Arguments) { sysAttrs = args.Get(2).(json.RawMessage) }).Return(nil).Once()
+	var written *providers.OAuthProfile
+	clearMockCalls(mockInbound, "UpdateInboundClient")
+	mockInbound.On("UpdateInboundClient", mock.Anything, mock.Anything, mock.Anything, false, "cid-123").
+		Run(func(args mock.Arguments) { written = args.Get(2).(*providers.OAuthProfile) }).Return(nil).Once()
+
+	_, svcErr := svc.UpdateOwnedAgent(context.Background(), "alice", testAgentID,
+		providers.AgentKindPersonalAssistant, req)
+
+	suite.Require().Nil(svcErr)
+	suite.Require().NotNil(written)
+	assert.Equal(suite.T(), []string{string(providers.GrantTypeCIBA), string(providers.GrantTypeRefreshToken)},
+		written.GrantTypes)
+	assert.Empty(suite.T(), written.ResponseTypes)
+	assert.False(suite.T(), written.PKCERequired)
+	assert.Equal(suite.T(), []string{"https://b.example.com/cb"}, written.RedirectURIs)
+	assert.Equal(suite.T(), key, written.Certificate, "the stored key is kept")
+	assert.Equal(suite.T(), agentSystemAttributes{
+		description: "new", owner: "alice", clientID: "cid-123", kind: providers.AgentKindPersonalAssistant,
+	}, readSystemAttributes(sysAttrs))
+}
+
+// The authorization code grant comes with response type code and PKCE, and a description left out is cleared.
+func (suite *AgentServiceTestSuite) TestUpdateOwnedAgent_AuthorizationCode() {
+	svc, mockEntity, mockInbound := suite.setupOwnedAgentUpdate(nil)
+	req := ownedAgentUpdate([]providers.GrantType{providers.GrantTypeAuthorizationCode},
+		[]string{"https://a.example.com/cb"})
+	req.Description = ""
+	mockEntity.On("UpdateAttributes", mock.Anything, testAgentID, mock.Anything).Return(nil).Once()
+	var sysAttrs json.RawMessage
+	mockEntity.On("UpdateSystemAttributes", mock.Anything, testAgentID, mock.Anything).
+		Run(func(args mock.Arguments) { sysAttrs = args.Get(2).(json.RawMessage) }).Return(nil).Once()
+	var written *providers.OAuthProfile
+	clearMockCalls(mockInbound, "UpdateInboundClient")
+	mockInbound.On("UpdateInboundClient", mock.Anything, mock.Anything, mock.Anything, false, "cid-123").
+		Run(func(args mock.Arguments) { written = args.Get(2).(*providers.OAuthProfile) }).Return(nil).Once()
+
+	_, svcErr := svc.UpdateOwnedAgent(context.Background(), "alice", testAgentID,
+		providers.AgentKindPersonalAssistant, req)
+
+	suite.Require().Nil(svcErr)
+	suite.Require().NotNil(written)
+	assert.Equal(suite.T(), []string{string(providers.ResponseTypeCode)}, written.ResponseTypes)
+	assert.True(suite.T(), written.PKCERequired)
+	assert.Empty(suite.T(), readSystemAttributes(sysAttrs).description)
+}
+
+// A missing part or a refused change writes nothing.
+func (suite *AgentServiceTestSuite) TestUpdateOwnedAgent_Refused() {
+	authCode := []providers.GrantType{providers.GrantTypeAuthorizationCode}
+	redirect := []string{"https://a.example.com/cb"}
+	withAttributes := func(attributes string) *model.UpdateOwnedAgentRequest {
+		req := ownedAgentUpdate(authCode, redirect)
+		req.Attributes = json.RawMessage(attributes)
+		return req
+	}
+	cases := []struct {
+		name     string
+		req      *model.UpdateOwnedAgentRequest
+		validate error
+		code     string
+	}{
+		{"an empty body", &model.UpdateOwnedAgentRequest{}, nil, ErrorInvalidRequestFormat.Code},
+		{"no attributes", withAttributes(""), nil, ErrorInvalidRequestFormat.Code},
+		{"null attributes", withAttributes("null"), nil, ErrorInvalidRequestFormat.Code},
+		{"no grant types", ownedAgentUpdate(nil, redirect), nil, ErrorInvalidRequestFormat.Code},
+		{"no redirect URIs", ownedAgentUpdate(authCode, nil), nil, ErrorInvalidRequestFormat.Code},
+		{"a grant outside the personal set", ownedAgentUpdate(
+			[]providers.GrantType{providers.GrantTypeClientCredentials}, redirect),
+			nil, ErrorGrantTypeNotAllowedForPersonalAgent.Code},
+		{"the inbound client rules", ownedAgentUpdate(authCode, []string{}),
+			inboundclient.ErrOAuthAuthCodeRequiresRedirectURIs, ""},
+	}
+	for _, tc := range cases {
+		suite.Run(tc.name, func() {
+			svc, mockEntity, mockInbound := suite.setupOwnedAgentUpdate(nil)
+			if tc.validate != nil {
+				clearMockCalls(mockInbound, "Validate")
+				mockInbound.On("Validate", mock.Anything, mock.Anything, mock.Anything, mock.Anything,
+					mock.Anything).Return(tc.validate).Once()
+			}
+
+			_, svcErr := svc.UpdateOwnedAgent(context.Background(), "alice", testAgentID,
+				providers.AgentKindPersonalAssistant, tc.req)
+
+			suite.Require().NotNil(svcErr)
+			assert.Equal(suite.T(), tidcommon.ClientErrorType, svcErr.Type)
+			if tc.code != "" {
+				assert.Equal(suite.T(), tc.code, svcErr.Code)
+			}
+			mockEntity.AssertNotCalled(suite.T(), "UpdateAttributes", mock.Anything, mock.Anything, mock.Anything)
+			mockInbound.AssertNotCalled(suite.T(), "UpdateInboundClient",
+				mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		})
+	}
+}
+
+// An empty grant list leaves the agent with no grants, and so with no response type or PKCE.
+func (suite *AgentServiceTestSuite) TestUpdateOwnedAgent_EmptyGrantListRemovesEveryGrant() {
+	svc, mockEntity, mockInbound := suite.setupOwnedAgentUpdate(nil)
+	mockEntity.On("UpdateAttributes", mock.Anything, testAgentID, mock.Anything).Return(nil).Once()
+	mockEntity.On("UpdateSystemAttributes", mock.Anything, testAgentID, mock.Anything).Return(nil).Once()
+	var written *providers.OAuthProfile
+	clearMockCalls(mockInbound, "UpdateInboundClient")
+	mockInbound.On("UpdateInboundClient", mock.Anything, mock.Anything, mock.Anything, false, "cid-123").
+		Run(func(args mock.Arguments) { written = args.Get(2).(*providers.OAuthProfile) }).Return(nil).Once()
+
+	_, svcErr := svc.UpdateOwnedAgent(context.Background(), "alice", testAgentID,
+		providers.AgentKindPersonalAssistant, ownedAgentUpdate([]providers.GrantType{}, []string{}))
+
+	suite.Require().Nil(svcErr)
+	suite.Require().NotNil(written)
+	assert.NotNil(suite.T(), written.GrantTypes)
+	assert.Empty(suite.T(), written.GrantTypes)
+	assert.Empty(suite.T(), written.ResponseTypes)
+	assert.False(suite.T(), written.PKCERequired)
+}
+
+// Another kind gets the grant policy every agent gets on creation, not the personal rules: client credentials
+// is added, and the stored response types and PKCE are kept rather than derived.
+func (suite *AgentServiceTestSuite) TestUpdateOwnedAgent_OtherKindGetsTheSharedGrantPolicy() {
+	svc, mockEntity, mockInbound := suite.setupOwnedAgentUpdate(nil)
+	clearMockCalls(mockEntity, "GetEntityProfile")
+	mockEntity.On("GetEntityProfile", mock.Anything, testAgentID).
+		Return(buildAgentEntityFixture(testAgentName, "", "alice", "cid-123"), nil)
+	mockEntity.On("UpdateAttributes", mock.Anything, testAgentID, mock.Anything).Return(nil).Once()
+	mockEntity.On("UpdateSystemAttributes", mock.Anything, testAgentID, mock.Anything).Return(nil).Once()
+	var written *providers.OAuthProfile
+	clearMockCalls(mockInbound, "UpdateInboundClient")
+	mockInbound.On("UpdateInboundClient", mock.Anything, mock.Anything, mock.Anything, false, "cid-123").
+		Run(func(args mock.Arguments) { written = args.Get(2).(*providers.OAuthProfile) }).Return(nil).Once()
+
+	_, svcErr := svc.UpdateOwnedAgent(context.Background(), "alice", testAgentID, "",
+		ownedAgentUpdate([]providers.GrantType{providers.GrantTypeAuthorizationCode}, []string{}))
+
+	suite.Require().Nil(svcErr)
+	suite.Require().NotNil(written)
+	assert.Equal(suite.T(), []string{string(providers.GrantTypeClientCredentials),
+		string(providers.GrantTypeAuthorizationCode)}, written.GrantTypes)
+	assert.Equal(suite.T(), []string{string(providers.ResponseTypeCode)}, written.ResponseTypes,
+		"response types are not derived for another kind")
+	assert.True(suite.T(), written.PKCERequired, "PKCE is not derived for another kind")
+}
+
+// An owner's update is captured for export, as an administrator's is.
+func (suite *AgentServiceTestSuite) TestUpdateOwnedAgent_CapturesValues() {
+	svc, mockEntity, _ := suite.setupOwnedAgentUpdate(nil)
+	capturer := &recordingCapturer{}
+	svc.valueCapturer = capturer
+	mockEntity.On("UpdateAttributes", mock.Anything, testAgentID, mock.Anything).Return(nil).Once()
+	mockEntity.On("UpdateSystemAttributes", mock.Anything, testAgentID, mock.Anything).Return(nil).Once()
+
+	_, svcErr := svc.UpdateOwnedAgent(context.Background(), "alice", testAgentID,
+		providers.AgentKindPersonalAssistant, ownedAgentUpdate(
+			[]providers.GrantType{providers.GrantTypeAuthorizationCode}, []string{"https://a.example.com/cb"}))
+
+	suite.Require().Nil(svcErr)
+	assert.Equal(suite.T(), testAgentID, capturer.captured(suite).ID)
+}
+
+// The stored profile may be shared with a cache, so a refused update leaves it as it was.
+func (suite *AgentServiceTestSuite) TestUpdateOwnedAgent_RefusedLeavesTheStoredProfile() {
+	svc, _, mockInbound := suite.setupOwnedAgentUpdate(nil)
+	stored := &providers.OAuthProfile{
+		GrantTypes:    []string{string(providers.GrantTypeAuthorizationCode)},
+		ResponseTypes: []string{string(providers.ResponseTypeCode)},
+		RedirectURIs:  []string{"https://a.example.com/cb"},
+		PKCERequired:  true,
+	}
+	clearMockCalls(mockInbound, "GetOAuthProfileByEntityID")
+	mockInbound.On("GetOAuthProfileByEntityID", mock.Anything, testAgentID).Return(stored, nil)
+	clearMockCalls(mockInbound, "Validate")
+	mockInbound.On("Validate", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(inboundclient.ErrOAuthAuthCodeRequiresRedirectURIs).Once()
+
+	_, svcErr := svc.UpdateOwnedAgent(context.Background(), "alice", testAgentID,
+		providers.AgentKindPersonalAssistant,
+		ownedAgentUpdate([]providers.GrantType{providers.GrantTypeCIBA}, []string{}))
+
+	suite.Require().NotNil(svcErr)
+	assert.Equal(suite.T(), []string{"https://a.example.com/cb"}, stored.RedirectURIs)
+	assert.Equal(suite.T(), []string{string(providers.GrantTypeAuthorizationCode)}, stored.GrantTypes)
+	assert.True(suite.T(), stored.PKCERequired)
+}
+
+// Another owner's agent is not found, and a declarative one cannot be changed.
+func (suite *AgentServiceTestSuite) TestUpdateOwnedAgent_NotOwnedOrDeclarative() {
+	svc, _, _ := suite.setupOwnedAgentUpdate(nil)
+	req := ownedAgentUpdate([]providers.GrantType{providers.GrantTypeAuthorizationCode},
+		[]string{"https://a.example.com/cb"})
+	_, svcErr := svc.UpdateOwnedAgent(context.Background(), "bob", testAgentID,
+		providers.AgentKindPersonalAssistant, req)
+	suite.Require().NotNil(svcErr)
+	assert.Equal(suite.T(), ErrorAgentNotFound.Code, svcErr.Code)
+
+	svc, mockEntity, _, _, _ := suite.setupService()
+	declarative := withKind(buildAgentEntityFixture(testAgentName, "", "alice", ""),
+		providers.AgentKindPersonalAssistant)
+	declarative.IsReadOnly = true
+	clearMockCalls(mockEntity, "GetEntityProfile")
+	mockEntity.On("GetEntityProfile", mock.Anything, testAgentID).Return(declarative, nil)
+	_, svcErr = svc.UpdateOwnedAgent(context.Background(), "alice", testAgentID,
+		providers.AgentKindPersonalAssistant, req)
+	suite.Require().NotNil(svcErr)
+	assert.Equal(suite.T(), ErrorCannotModifyDeclarativeResource.Code, svcErr.Code)
+}
+
+// The owner deletes their agent through the same steps as an administrator, without the administrator check.
+func (suite *AgentServiceTestSuite) TestDeleteOwnedAgent() {
+	svc, mockEntity, mockInbound, _, _ := suite.setupService()
+	owned := withKind(buildAgentEntityFixture(testAgentName, "", "alice", "cid-123"),
+		providers.AgentKindPersonalAssistant)
+	clearMockCalls(mockEntity, "GetEntityProfile")
+	mockEntity.On("GetEntityProfile", mock.Anything, testAgentID).Return(owned, nil)
+	clearMockCalls(mockInbound, "DeleteInboundClient")
+	mockInbound.On("DeleteInboundClient", mock.Anything, testAgentID).Return(nil).Once()
+	clearMockCalls(mockEntity, "DeleteEntity")
+	mockEntity.On("DeleteEntity", mock.Anything, testAgentID).Return(nil).Once()
+
+	suite.Require().Nil(svc.DeleteOwnedAgent(context.Background(), "alice", testAgentID,
+		providers.AgentKindPersonalAssistant))
+
+	svcErr := svc.DeleteOwnedAgent(context.Background(), "bob", testAgentID, providers.AgentKindPersonalAssistant)
+	suite.Require().NotNil(svcErr)
+	assert.Equal(suite.T(), ErrorAgentNotFound.Code, svcErr.Code)
+	owned.IsReadOnly = true
+	svcErr = svc.DeleteOwnedAgent(context.Background(), "alice", testAgentID, providers.AgentKindPersonalAssistant)
+	suite.Require().NotNil(svcErr)
+	assert.Equal(suite.T(), ErrorCannotModifyDeclarativeResource.Code, svcErr.Code)
+}
+
 // A failed authorization check is a refusal, not a pass.
 func (suite *AgentServiceTestSuite) TestGetAgent_AuthzCheckError() {
 	authzMock := sysauthzmock.NewSystemAuthorizationServiceInterfaceMock(suite.T())
