@@ -145,6 +145,15 @@ type BasicAgentResponse struct {
 	Kind providers.AgentKind `json:"kind,omitempty"`
 }
 
+// UpdateOwnedAgentRequest is the body of an owner's update of their agent: the whole part the owner may change.
+// Attributes, grant types and redirect URIs are required; a description left out is cleared.
+type UpdateOwnedAgentRequest struct {
+	Description  string                `json:"description,omitempty"`
+	Attributes   json.RawMessage       `json:"attributes,omitempty"`
+	GrantTypes   []providers.GrantType `json:"grantTypes,omitempty"`
+	RedirectURIs []string              `json:"redirectUris,omitempty"`
+}
+
 // AgentListResponse is the paginated list response.
 type AgentListResponse struct {
 	TotalResults int                  `json:"totalResults"`

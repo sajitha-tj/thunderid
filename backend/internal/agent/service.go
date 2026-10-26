@@ -55,6 +55,11 @@ type AgentServiceInterface interface {
 		ctx context.Context, resourceType, id string) ([]resourcedependency.ResourceDependency, error)
 	SetDependencyRegistry(r resourcedependency.Registry)
 	GetClientRules(ctx context.Context, agentID string) (*providers.ClientRules, *tidcommon.ServiceError)
+	GetOwnedAgents(ctx context.Context, ownerID string, kind providers.AgentKind, limit, offset int) (
+		*model.AgentListResponse, *tidcommon.ServiceError)
+	UpdateOwnedAgent(ctx context.Context, ownerID, agentID string, kind providers.AgentKind,
+		req *model.UpdateOwnedAgentRequest) (*model.AgentCompleteResponse, *tidcommon.ServiceError)
+	DeleteOwnedAgent(ctx context.Context, ownerID, agentID string, kind providers.AgentKind) *tidcommon.ServiceError
 }
 
 type agentService struct {
@@ -113,7 +118,7 @@ func (s *agentService) CreateAgent(ctx context.Context, agent *providers.Agent) 
 	}
 
 	// Check if caller is authorized to create agents in the target OU.
-	if svcErr := s.checkAgentAccess(ctx, security.ActionCreateAgent, agent.OUID, ""); svcErr != nil {
+	if svcErr := s.checkAgentAccess(ctx, security.ActionCreateAgent, agent.OUID, "", ""); svcErr != nil {
 		return nil, svcErr
 	}
 
@@ -221,8 +226,12 @@ func (s *agentService) GetAgent(ctx context.Context, agentID string, includeDisp
 		return nil, &ErrorAgentNotFound
 	}
 
-	// Check authz using the agent's OU ID (fetched from store).
-	if svcErr := s.checkAgentAccess(ctx, security.ActionReadAgent, e.OUID, agentID); svcErr != nil {
+	// Check authz using the agent's OU ID (fetched from store). A personal agent's owner may read it too.
+	ownerID := ""
+	if sysAttrs := readSystemAttributes(e.SystemAttributes); sysAttrs.Kind == providers.AgentKindPersonalAssistant {
+		ownerID = sysAttrs.Owner
+	}
+	if svcErr := s.checkAgentAccess(ctx, security.ActionReadAgent, e.OUID, agentID, ownerID); svcErr != nil {
 		return nil, svcErr
 	}
 
@@ -275,6 +284,210 @@ func (s *agentService) GetClientRules(ctx context.Context, agentID string) (
 	return &providers.ClientRules{RequiredSubjectID: sysAttrs.Owner}, nil
 }
 
+// GetOwnedAgents returns a page of the agents of the given kind that the owner owns, across all organization
+// units. It serves the owner, so it runs no administrator authorization check; the caller passes the owner.
+func (s *agentService) GetOwnedAgents(ctx context.Context, ownerID string, kind providers.AgentKind,
+	limit, offset int) (*model.AgentListResponse, *tidcommon.ServiceError) {
+	if svcErr := validatePaginationParams(limit, offset); svcErr != nil {
+		return nil, svcErr
+	}
+	if limit == 0 {
+		limit = 30
+	}
+	sysQuery := entity.SystemAttributeQuery{
+		SystemAttributes: map[string]interface{}{fieldOwner: ownerID, fieldKind: string(kind)},
+	}
+
+	totalCount, err := s.entityService.GetEntityListCountBySystemAttributes(
+		ctx, providers.EntityCategoryAgent, sysQuery)
+	if err != nil {
+		s.logger.Error(ctx, "Failed to count the owner's agents", log.Error(err))
+		return nil, &tidcommon.InternalServerError
+	}
+	entities, err := s.entityService.GetEntityListBySystemAttributes(
+		ctx, providers.EntityCategoryAgent, sysQuery, limit, offset)
+	if err != nil {
+		s.logger.Error(ctx, "Failed to list the owner's agents", log.Error(err))
+		return nil, &tidcommon.InternalServerError
+	}
+
+	return s.buildListResponse(ctx, ownedAgentsBasePath, entities, totalCount, limit, offset, false), nil
+}
+
+// UpdateOwnedAgent replaces the part of an agent its owner may change: the description, the schema attributes,
+// the grant types and the redirect URIs. The attributes, grant types and redirect URIs are required. The OAuth
+// change is validated before anything is written, so a refused grant or redirect URI changes nothing.
+func (s *agentService) UpdateOwnedAgent(ctx context.Context, ownerID, agentID string, kind providers.AgentKind,
+	req *model.UpdateOwnedAgentRequest) (*model.AgentCompleteResponse, *tidcommon.ServiceError) {
+	if req == nil || len(req.Attributes) == 0 || string(req.Attributes) == "null" || req.GrantTypes == nil ||
+		req.RedirectURIs == nil {
+		return nil, &ErrorInvalidRequestFormat
+	}
+	e, svcErr := s.loadOwnedAgent(ctx, security.ActionUpdateAgent, ownerID, agentID, kind)
+	if svcErr != nil {
+		return nil, svcErr
+	}
+	if e.IsReadOnly {
+		return nil, &ErrorCannotModifyDeclarativeResource
+	}
+	sysAttrs := readSystemAttributes(e.SystemAttributes)
+
+	client, oauthProfile, svcErr := s.ownedAgentOAuthUpdate(ctx, agentID, sysAttrs.ClientID, kind, req)
+	if svcErr != nil {
+		return nil, svcErr
+	}
+
+	if err := s.entityService.UpdateAttributes(ctx, agentID, req.Attributes); err != nil {
+		if mapped := mapEntityError(err); mapped != nil {
+			return nil, mapped
+		}
+		s.logger.Error(ctx, "Failed to update agent attributes", log.String("agentID", agentID), log.Error(err))
+		return nil, &tidcommon.InternalServerError
+	}
+	if err := s.inboundClientService.UpdateInboundClient(
+		ctx, client, oauthProfile, false, sysAttrs.ClientID); err != nil {
+		return nil, s.inboundUpdateError(ctx, agentID, err)
+	}
+	sysAttrs.Description = req.Description
+	sysAttrsJSON, err := buildSystemAttributesJSON(sysAttrs)
+	if err == nil {
+		err = s.entityService.UpdateSystemAttributes(ctx, agentID, sysAttrsJSON)
+	}
+	if err != nil {
+		s.logger.Error(ctx, "Failed to update agent description", log.String("agentID", agentID), log.Error(err))
+		return nil, &tidcommon.InternalServerError
+	}
+
+	updated, err := s.entityService.GetEntityProfile(ctx, agentID)
+	if err != nil {
+		s.logger.Error(ctx, "Failed to read the updated agent", log.String("agentID", agentID), log.Error(err))
+		return nil, &tidcommon.InternalServerError
+	}
+	full, svcErr := s.composeGetResponse(ctx, updated)
+	if svcErr != nil {
+		return nil, svcErr
+	}
+	resp := &model.AgentCompleteResponse{
+		ID:                    full.ID,
+		OUID:                  full.OUID,
+		Type:                  full.Type,
+		Description:           full.Description,
+		LogoURL:               full.LogoURL,
+		Owner:                 full.Owner,
+		Attributes:            full.Attributes,
+		Status:                full.Status,
+		LastLoginAt:           full.LastLoginAt,
+		Kind:                  full.Kind,
+		InboundAuthProfileReq: full.InboundAuthProfileReq,
+		InboundAuthConfig:     full.InboundAuthConfig,
+	}
+	s.populateOUHandleForComplete(ctx, resp)
+	s.captureValues(ctx, resp)
+	return resp, nil
+}
+
+// ownedAgentOAuthUpdate builds the agent's inbound client and OAuth profile with the requested grant types and
+// redirect URIs, and validates them without writing. The grant types go through the same policy as on creation
+// (resolveGrantTypes) for the agent's kind; an empty list leaves the agent with no grants, so it gets no tokens.
+// The stored key is carried over, since the update writes the certificate from the profile.
+func (s *agentService) ownedAgentOAuthUpdate(ctx context.Context, agentID, clientID string, kind providers.AgentKind,
+	req *model.UpdateOwnedAgentRequest,
+) (*inboundmodel.InboundClient, *providers.OAuthProfile, *tidcommon.ServiceError) {
+	storedClient, err := s.inboundClientService.GetInboundClientByEntityID(ctx, agentID)
+	if err != nil {
+		s.logger.Error(ctx, "Failed to load the agent's inbound client", log.String("agentID", agentID), log.Error(err))
+		return nil, nil, &tidcommon.InternalServerError
+	}
+	storedProfile, err := s.inboundClientService.GetOAuthProfileByEntityID(ctx, agentID)
+	if err != nil {
+		s.logger.Error(ctx, "Failed to load the agent's OAuth profile", log.String("agentID", agentID), log.Error(err))
+		return nil, nil, &tidcommon.InternalServerError
+	}
+	// The stored records may be shared with a cache, so the update works on copies: a refused change must not
+	// alter what later reads see.
+	client, profile := *storedClient, *storedProfile
+	certificate, certErr := s.inboundClientService.GetCertificate(ctx, cert.CertificateReferenceTypeOAuthApp, clientID)
+	if certErr != nil {
+		return nil, nil, s.translateCertOperationError(ctx, certErr)
+	}
+	profile.Certificate = certificate
+
+	profile.RedirectURIs = req.RedirectURIs
+	profile.GrantTypes, profile.ResponseTypes, profile.PKCERequired = []string{}, nil, false
+	if len(req.GrantTypes) > 0 {
+		_, storedResponseTypes := convertGrantAndResponseTypes(storedProfile)
+		configs, svcErr := resolveGrantTypes([]providers.InboundAuthConfigWithSecret{{
+			Type: providers.OAuthInboundAuthType,
+			OAuthConfig: &providers.OAuthConfigWithSecret{
+				GrantTypes:              req.GrantTypes,
+				ResponseTypes:           storedResponseTypes,
+				PKCERequired:            storedProfile.PKCERequired,
+				PublicClient:            storedProfile.PublicClient,
+				TokenEndpointAuthMethod: providers.TokenEndpointAuthMethod(storedProfile.TokenEndpointAuthMethod),
+			},
+		}}, false, kind)
+		if svcErr != nil {
+			return nil, nil, svcErr
+		}
+		resolved := configs[0].OAuthConfig
+		profile.GrantTypes = sysutils.ConvertToStringSlice(resolved.GrantTypes)
+		profile.ResponseTypes = sysutils.ConvertToStringSlice(resolved.ResponseTypes)
+		profile.PKCERequired = resolved.PKCERequired
+	}
+
+	if err := s.inboundClientService.Validate(ctx, &client, &profile, false, clientID); err != nil {
+		return nil, nil, s.inboundUpdateError(ctx, agentID, err)
+	}
+	return &client, &profile, nil
+}
+
+// inboundUpdateError maps an inbound client validation or update failure to the agent API error.
+func (s *agentService) inboundUpdateError(ctx context.Context, agentID string, err error) *tidcommon.ServiceError {
+	if svcErr := s.translateInboundClientError(ctx, err); svcErr != nil {
+		return svcErr
+	}
+	s.logger.Error(ctx, "Failed to update the agent's inbound client", log.String("agentID", agentID), log.Error(err))
+	return &tidcommon.InternalServerError
+}
+
+// DeleteOwnedAgent deletes an agent of the given kind that the owner owns. A declarative agent cannot be deleted.
+func (s *agentService) DeleteOwnedAgent(ctx context.Context, ownerID, agentID string,
+	kind providers.AgentKind) *tidcommon.ServiceError {
+	e, svcErr := s.loadOwnedAgent(ctx, security.ActionDeleteAgent, ownerID, agentID, kind)
+	if svcErr != nil {
+		return svcErr
+	}
+	if e.IsReadOnly {
+		return &ErrorCannotModifyDeclarativeResource
+	}
+	return s.deleteAgent(ctx, agentID)
+}
+
+// loadOwnedAgent loads an agent of the given kind owned by the owner, or returns not found, and checks that the
+// caller may perform action on it as its owner.
+func (s *agentService) loadOwnedAgent(ctx context.Context, action security.Action, ownerID, agentID string,
+	kind providers.AgentKind) (*providers.Entity, *tidcommon.ServiceError) {
+	if ownerID == "" || agentID == "" {
+		return nil, &ErrorAgentNotFound
+	}
+	e, err := s.entityService.GetEntityProfile(ctx, agentID)
+	if err != nil {
+		if errors.Is(err, entity.ErrEntityNotFound) {
+			return nil, &ErrorAgentNotFound
+		}
+		s.logger.Error(ctx, "Failed to retrieve agent entity", log.String("agentID", agentID), log.Error(err))
+		return nil, &tidcommon.InternalServerError
+	}
+	sysAttrs := readSystemAttributes(e.SystemAttributes)
+	if e.Category != providers.EntityCategoryAgent || sysAttrs.Owner != ownerID || sysAttrs.Kind != kind {
+		return nil, &ErrorAgentNotFound
+	}
+	if svcErr := s.checkAgentAccess(ctx, action, e.OUID, agentID, sysAttrs.Owner); svcErr != nil {
+		return nil, svcErr
+	}
+	return e, nil
+}
+
 // GetAgentList returns a paginated list of agents.
 func (s *agentService) GetAgentList(ctx context.Context, limit, offset int,
 	filters map[string]interface{}, includeDisplay bool) (
@@ -320,7 +533,7 @@ func (s *agentService) listAllAgents(ctx context.Context, limit, offset int,
 		return nil, &tidcommon.InternalServerError
 	}
 
-	return s.buildListResponse(ctx, entities, totalCount, limit, offset, includeDisplay), nil
+	return s.buildListResponse(ctx, agentBasePath, entities, totalCount, limit, offset, includeDisplay), nil
 }
 
 // listAgentsByOUIDs retrieves agents scoped to the given organization unit IDs. The OU filter is
@@ -329,7 +542,7 @@ func (s *agentService) listAgentsByOUIDs(ctx context.Context, ouIDs []string, li
 	filters map[string]interface{}, includeDisplay bool) (
 	*model.AgentListResponse, *tidcommon.ServiceError) {
 	if len(ouIDs) == 0 {
-		return s.buildListResponse(ctx, []providers.Entity{}, 0, limit, offset, includeDisplay), nil
+		return s.buildListResponse(ctx, agentBasePath, []providers.Entity{}, 0, limit, offset, includeDisplay), nil
 	}
 
 	totalCount, err := s.entityService.GetEntityListCountByOUIDs(
@@ -346,7 +559,7 @@ func (s *agentService) listAgentsByOUIDs(ctx context.Context, ouIDs []string, li
 		return nil, &tidcommon.InternalServerError
 	}
 
-	return s.buildListResponse(ctx, entities, totalCount, limit, offset, includeDisplay), nil
+	return s.buildListResponse(ctx, agentBasePath, entities, totalCount, limit, offset, includeDisplay), nil
 }
 
 // UpdateAgent applies a full-replacement update to the agent.
@@ -382,7 +595,7 @@ func (s *agentService) UpdateAgent(ctx context.Context, agentID string,
 
 	// Check authz using the existing agent's OU ID.
 	if svcErr := s.checkAgentAccess(
-		ctx, security.ActionUpdateAgent, existing.OUID, agentID); svcErr != nil {
+		ctx, security.ActionUpdateAgent, existing.OUID, agentID, ""); svcErr != nil {
 		return nil, svcErr
 	}
 
@@ -433,7 +646,7 @@ func (s *agentService) UpdateAgent(ctx context.Context, agentID string,
 	// ouHandle to an OU ID; both checks still precede every mutation below.
 	if ouID != existing.OUID {
 		if svcErr := s.checkAgentAccess(
-			ctx, security.ActionUpdateAgent, ouID, agentID); svcErr != nil {
+			ctx, security.ActionUpdateAgent, ouID, agentID, ""); svcErr != nil {
 			return nil, svcErr
 		}
 	}
@@ -547,10 +760,16 @@ func (s *agentService) DeleteAgent(ctx context.Context, agentID string) *tidcomm
 
 	// Check authz before the cascade below, which is not transactional with the entity delete.
 	if svcErr := s.checkAgentAccess(
-		ctx, security.ActionDeleteAgent, existing.OUID, agentID); svcErr != nil {
+		ctx, security.ActionDeleteAgent, existing.OUID, agentID, ""); svcErr != nil {
 		return svcErr
 	}
 
+	return s.deleteAgent(ctx, agentID)
+}
+
+// deleteAgent removes an agent whose caller is already authorized: its dependents, its inbound client, then
+// its entity.
+func (s *agentService) deleteAgent(ctx context.Context, agentID string) *tidcommon.ServiceError {
 	// Remove dependents that must be deleted with the agent (e.g. its role assignments and group
 	// memberships). Run before the deletes so a cleanup failure aborts and leaves the agent
 	// retriable. Fails closed when the registry is unavailable.
@@ -685,7 +904,7 @@ func (s *agentService) GetAgentGroups(ctx context.Context, agentID string, limit
 
 	// Check authz using the agent's OU ID.
 	if svcErr := s.checkAgentAccess(
-		ctx, security.ActionReadAgent, existing.OUID, agentID); svcErr != nil {
+		ctx, security.ActionReadAgent, existing.OUID, agentID, ""); svcErr != nil {
 		return nil, svcErr
 	}
 
@@ -747,7 +966,7 @@ func (s *agentService) GetAgentRoles(ctx context.Context, agentID string, limit,
 
 	// Check authz using the agent's OU ID.
 	if svcErr := s.checkAgentAccess(
-		ctx, security.ActionReadAgent, existing.OUID, agentID); svcErr != nil {
+		ctx, security.ActionReadAgent, existing.OUID, agentID, ""); svcErr != nil {
 		return nil, svcErr
 	}
 
@@ -906,10 +1125,11 @@ func (s *agentService) deleteEntityCompensation(ctx context.Context, agentID str
 
 // checkAgentAccess validates that the caller is authorized to perform the given action on an agent.
 func (s *agentService) checkAgentAccess(
-	ctx context.Context, action security.Action, ouID string, resourceID string,
+	ctx context.Context, action security.Action, ouID string, resourceID string, ownerID string,
 ) *tidcommon.ServiceError {
-	allowed, svcErr := s.authzService.IsActionAllowed(ctx, action,
-		&sysauthz.ActionContext{ResourceType: security.ResourceTypeAgent, OUID: ouID, ResourceID: resourceID})
+	allowed, svcErr := s.authzService.IsActionAllowed(ctx, action, &sysauthz.ActionContext{
+		ResourceType: security.ResourceTypeAgent, OUID: ouID, ResourceID: resourceID, ResourceOwnerID: ownerID,
+	})
 	if svcErr != nil {
 		s.logger.Error(ctx, "Failed to check authorization for action",
 			log.String("action", string(action)), log.Any("error", svcErr))
@@ -1066,11 +1286,7 @@ var personalAgentGrantTypes = []providers.GrantType{
 }
 
 // validatePersonalAgentGrantTypes checks that every grant type of a personal agent is in the personal set.
-// An empty list is refused, because an agent's OAuth profile defaults to client_credentials.
 func validatePersonalAgentGrantTypes(grantTypes []providers.GrantType) *tidcommon.ServiceError {
-	if len(grantTypes) == 0 {
-		return &ErrorGrantTypeNotAllowedForPersonalAgent
-	}
 	for _, grantType := range grantTypes {
 		if !slices.Contains(personalAgentGrantTypes, grantType) {
 			return &ErrorGrantTypeNotAllowedForPersonalAgent
@@ -1320,8 +1536,9 @@ func (s *agentService) composeGetResponse(ctx context.Context, e *providers.Enti
 	return resp, nil
 }
 
-// buildListResponse builds the paged agent list response from a slice of entities and pagination metadata.
-func (s *agentService) buildListResponse(ctx context.Context, entities []providers.Entity,
+// buildListResponse builds the paged agent list response from a slice of entities and pagination metadata. The
+// pagination links point at basePath.
+func (s *agentService) buildListResponse(ctx context.Context, basePath string, entities []providers.Entity,
 	totalCount, limit, offset int, includeDisplay bool) *model.AgentListResponse {
 	logoByID := s.agentLogoMap(ctx, entities)
 	// One read for the page, so the policy resolves once.
@@ -1362,7 +1579,7 @@ func (s *agentService) buildListResponse(ctx context.Context, entities []provide
 		StartIndex:   offset + 1,
 		Count:        len(agents),
 		Agents:       agents,
-		Links:        sysutils.BuildPaginationLinks(agentBasePath, limit, offset, totalCount, displayQuery),
+		Links:        sysutils.BuildPaginationLinks(basePath, limit, offset, totalCount, displayQuery),
 	}
 }
 

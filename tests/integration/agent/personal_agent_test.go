@@ -20,9 +20,12 @@ import (
 const (
 	paPassword         = "Personal@Agent123"
 	paRedirectURI      = "https://agent.example.com/callback"
+	paPortalRedirect   = "http://localhost:3000/portal/callback"
 	paRegistrationType = "REGISTRATION"
 	paKind             = "personal-assistant"
 	paSeededUserType   = "person"
+	// paSuiteAgentName is the name the suite's agent is registered with.
+	paSuiteAgentName = "pa_suite_assistant"
 	// paSignInAction submits the sign-in prompt of the personal agent login flow the agent authorizes through.
 	paSignInAction       = "action_001"
 	paConsentDecisions   = "consent_decisions"
@@ -46,6 +49,8 @@ type PersonalAgentTestSuite struct {
 	resourceServerID string
 	roleID           string
 	appID            string
+	portalAppID      string
+	portalClientID   string
 	flows            *testutils.PersonalAgentRegistrationFlows
 	ownerID          string
 	ownerUsername    string
@@ -105,6 +110,11 @@ func (ts *PersonalAgentTestSuite) TearDownSuite() {
 	if ts.agentID != "" {
 		if err := deleteAgent(ts.agentID); err != nil {
 			ts.T().Logf("failed to delete agent %s: %v", ts.agentID, err)
+		}
+	}
+	if ts.portalAppID != "" {
+		if err := testutils.DeleteApplication(ts.portalAppID); err != nil {
+			ts.T().Logf("failed to delete app %s: %v", ts.portalAppID, err)
 		}
 	}
 	if ts.appID != "" {
@@ -225,7 +235,272 @@ func (ts *PersonalAgentTestSuite) TestAdminReadsKindOwnerAndDetails() {
 	ts.Equal("Helps with my calendar", agent.Description)
 	attributes, ok := agent.Attributes.(map[string]interface{})
 	ts.Require().True(ok)
-	ts.Equal("pa_suite_assistant", attributes["name"])
+	ts.Equal(paSuiteAgentName, attributes["name"])
+}
+
+// An owner lists and reads their personal agents with their own token, reading the same agent object an
+// administrator reads. Another user, the agent's own delegated token, a request without a token, and an ordinary
+// agent the owner also owns get nothing.
+func (ts *PersonalAgentTestSuite) TestOwnerListsAndReadsTheirAgents() {
+	ownerToken := ts.userToken(ts.ownerUsername)
+	otherToken := ts.userToken(ts.otherUsername)
+
+	status, body := ts.selfServiceGet("/users/me/agents", ownerToken)
+	ts.Require().Equal(http.StatusOK, status, body)
+	var list struct {
+		TotalResults int                      `json:"totalResults"`
+		Agents       []map[string]interface{} `json:"agents"`
+	}
+	ts.Require().NoError(json.Unmarshal([]byte(body), &list))
+	ids := make([]interface{}, 0, len(list.Agents))
+	for _, agent := range list.Agents {
+		ids = append(ids, agent["id"])
+		ts.Equal(ts.ownerID, agent["owner"], "each listed agent is the caller's")
+		ts.Equal("personal-assistant", agent["kind"])
+	}
+	ts.Contains(ids, ts.agentID)
+
+	status, body = ts.selfServiceGet("/users/me/agents/"+ts.agentID, ownerToken)
+	ts.Require().Equal(http.StatusOK, status, body)
+	var agent struct {
+		Kind              string `json:"kind"`
+		Owner             string `json:"owner"`
+		ClientID          string `json:"clientId"`
+		InboundAuthConfig []struct {
+			Config struct {
+				GrantTypes              []string `json:"grantTypes"`
+				TokenEndpointAuthMethod string   `json:"tokenEndpointAuthMethod"`
+			} `json:"config"`
+		} `json:"inboundAuthConfig"`
+	}
+	ts.Require().NoError(json.Unmarshal([]byte(body), &agent))
+	ts.Equal(paKind, agent.Kind)
+	ts.Equal(ts.ownerID, agent.Owner)
+	ts.Equal(ts.clientID, agent.ClientID)
+	ts.Require().Len(agent.InboundAuthConfig, 1)
+	ts.Equal([]string{"authorization_code"}, agent.InboundAuthConfig[0].Config.GrantTypes)
+	ts.Equal("client_secret_basic", agent.InboundAuthConfig[0].Config.TokenEndpointAuthMethod)
+	ts.NotContains(body, "clientSecret", "a read never returns the client secret")
+
+	status, body = ts.selfServiceGet("/users/me/agents/"+ts.agentID, otherToken)
+	ts.Equal(http.StatusForbidden, status, body)
+	status, body = ts.selfServiceGet("/users/me/agents", otherToken)
+	ts.Require().Equal(http.StatusOK, status, body)
+	ts.NotContains(body, ts.agentID)
+
+	delegated := ts.obtainToken(ts.ownerUsername).AccessToken
+	status, body = ts.selfServiceGet("/users/me/agents", delegated)
+	ts.Equal(http.StatusForbidden, status, body)
+	ts.Contains(body, "AGT-1053")
+
+	status, _ = ts.selfServiceGet("/users/me/agents", "")
+	ts.Equal(http.StatusUnauthorized, status)
+
+	ordinary := ts.personalAgentRequest(ts.ownerID)
+	delete(ordinary, "kind")
+	ordinary["inboundAuthConfig"] = []map[string]interface{}{{
+		"type":   "oauth2",
+		"config": map[string]interface{}{"grantTypes": []string{"client_credentials"}},
+	}}
+	resp, err := doPost(testServerURL+agentBasePath, ordinary)
+	ts.Require().NoError(err)
+	created := readBody(resp)
+	resp.Body.Close()
+	ts.Require().Equal(http.StatusCreated, resp.StatusCode, created)
+	var ordinaryAgent struct {
+		ID string `json:"id"`
+	}
+	ts.Require().NoError(json.Unmarshal([]byte(created), &ordinaryAgent))
+	defer func() { _ = deleteAgent(ordinaryAgent.ID) }()
+	status, body = ts.selfServiceGet("/users/me/agents/"+ordinaryAgent.ID, ownerToken)
+	ts.Equal(http.StatusForbidden, status, "an ordinary agent the owner owns is not self-service: %s", body)
+}
+
+// ownedAgentUpdate is the part of an owner's update response the tests read: the same object PUT /agents/{id}
+// returns, with the OAuth settings under inboundAuthConfig.
+type ownedAgentUpdate struct {
+	Description       string `json:"description"`
+	Owner             string `json:"owner"`
+	InboundAuthConfig []struct {
+		Config struct {
+			GrantTypes   []string `json:"grantTypes"`
+			RedirectURIs []string `json:"redirectUris"`
+			ClientSecret string   `json:"clientSecret"`
+		} `json:"config"`
+	} `json:"inboundAuthConfig"`
+}
+
+// ownedAgentBody returns a full owner update of an agent named name.
+func ownedAgentBody(name, description, grants, redirectURIs string) string {
+	return `{"description":"` + description + `","attributes":{"name":"` + name + `"},` +
+		`"grantTypes":` + grants + `,"redirectUris":` + redirectURIs + `}`
+}
+
+// The owner replaces the description, redirect URIs and grant types of their agent. A grant they remove is
+// refused from then on, including for a refresh token issued before. A body missing a part, fields outside the
+// editable set, grants outside the personal set, another user and a delegated token are all refused. An empty
+// grant list removes every grant, so the agent can no longer authorize.
+func (ts *PersonalAgentTestSuite) TestOwnerUpdatesTheirAgent() {
+	ownerToken := ts.userToken(ts.ownerUsername)
+	path := "/users/me/agents/" + ts.agentID
+	original := `["` + paRedirectURI + `"]`
+	defer func() {
+		status, body := ts.selfServiceCall(http.MethodPut, path, ownerToken,
+			ownedAgentBody(paSuiteAgentName, "Helps with my calendar", `["authorization_code"]`, original))
+		ts.Equal(http.StatusOK, status, "restoring the agent: %s", body)
+	}()
+
+	status, body := ts.selfServiceCall(http.MethodPut, path, ownerToken, ownedAgentBody(paSuiteAgentName,
+		"Plans my week", `["authorization_code","refresh_token"]`, `["`+paRedirectURI+`","https://agent.example.com/other"]`))
+	ts.Require().Equal(http.StatusOK, status, body)
+	var updated ownedAgentUpdate
+	ts.Require().NoError(json.Unmarshal([]byte(body), &updated))
+	ts.Equal("Plans my week", updated.Description)
+	ts.Equal(ts.ownerID, updated.Owner)
+	ts.Require().Len(updated.InboundAuthConfig, 1)
+	ts.Equal([]string{"authorization_code", "refresh_token"}, updated.InboundAuthConfig[0].Config.GrantTypes)
+	ts.Len(updated.InboundAuthConfig[0].Config.RedirectURIs, 2)
+	ts.Empty(updated.InboundAuthConfig[0].Config.ClientSecret, "the owner's update issues no client secret")
+
+	token := ts.obtainToken(ts.ownerUsername)
+	ts.Require().NotEmpty(token.RefreshToken, "with the refresh token grant the agent gets a refresh token")
+
+	status, body = ts.selfServiceCall(http.MethodPut, path, ownerToken,
+		ownedAgentBody(paSuiteAgentName, "Plans my week", `["authorization_code"]`, original))
+	ts.Require().Equal(http.StatusOK, status, body)
+	status, body = ts.postToken(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken}})
+	ts.NotEqual(http.StatusOK, status, "a removed grant is refused: %s", body)
+
+	for _, refused := range []string{
+		`{}`,
+		`{"description":"x","attributes":{"name":"pa_suite_assistant"},"grantTypes":["authorization_code"]}`,
+		`{"attributes":null,"grantTypes":["authorization_code"],"redirectUris":` + original + `}`,
+		`{"authFlowId":"x","attributes":{"name":"pa_suite_assistant"},"grantTypes":["authorization_code"],` +
+			`"redirectUris":` + original + `}`,
+		ownedAgentBody(paSuiteAgentName, "x", `["client_credentials"]`, original),
+		ownedAgentBody(paSuiteAgentName, "x", `["authorization_code"]`, `[]`),
+	} {
+		status, body = ts.selfServiceCall(http.MethodPut, path, ownerToken, refused)
+		ts.Equal(http.StatusBadRequest, status, "%s: %s", refused, body)
+	}
+
+	valid := ownedAgentBody(paSuiteAgentName, "x", `["authorization_code"]`, original)
+	status, _ = ts.selfServiceCall(http.MethodPut, path, ts.userToken(ts.otherUsername), valid)
+	ts.Equal(http.StatusNotFound, status)
+	status, _ = ts.selfServiceCall(http.MethodPut, path, ts.obtainToken(ts.ownerUsername).AccessToken, valid)
+	ts.Equal(http.StatusForbidden, status)
+
+	status, body = ts.selfServiceCall(http.MethodPut, path, ownerToken,
+		ownedAgentBody(paSuiteAgentName, "x", `[]`, original))
+	ts.Require().Equal(http.StatusOK, status, body)
+	var cleared ownedAgentUpdate
+	ts.Require().NoError(json.Unmarshal([]byte(body), &cleared))
+	ts.Require().Len(cleared.InboundAuthConfig, 1)
+	ts.Empty(cleared.InboundAuthConfig[0].Config.GrantTypes, "an empty list removes every grant")
+	verifier, err := testutils.GenerateCodeVerifier()
+	ts.Require().NoError(err)
+	resp, err := testutils.InitiateAuthorizationFlowWithPKCE(ts.clientID, paRedirectURI, "code", paScope,
+		"pa-state", paResourceIdentifier, testutils.GenerateCodeChallenge(verifier), "S256")
+	ts.Require().NoError(err)
+	resp.Body.Close()
+	ts.Contains(resp.Header.Get("Location"), paUnauthorizedClient, "without grants the agent cannot authorize")
+}
+
+// The owner deletes a personal agent; another user and the agent's own delegated token cannot.
+func (ts *PersonalAgentTestSuite) TestOwnerDeletesTheirAgent() {
+	request := ts.personalAgentRequest(ts.ownerID, "authorization_code")
+	resp, err := doPost(testServerURL+agentBasePath, request)
+	ts.Require().NoError(err)
+	body := readBody(resp)
+	resp.Body.Close()
+	ts.Require().Equal(http.StatusCreated, resp.StatusCode, body)
+	var created struct {
+		ID string `json:"id"`
+	}
+	ts.Require().NoError(json.Unmarshal([]byte(body), &created))
+	path := "/users/me/agents/" + created.ID
+
+	status, _ := ts.selfServiceCall(http.MethodDelete, path, ts.userToken(ts.otherUsername), "")
+	ts.Equal(http.StatusNotFound, status, "another user cannot delete it")
+	status, _ = ts.selfServiceCall(http.MethodDelete, path, ts.obtainToken(ts.ownerUsername).AccessToken, "")
+	ts.Equal(http.StatusForbidden, status, "a delegated token cannot delete it")
+
+	ownerToken := ts.userToken(ts.ownerUsername)
+	status, body = ts.selfServiceCall(http.MethodDelete, path, ownerToken, "")
+	ts.Require().Equal(http.StatusNoContent, status, body)
+	status, _ = ts.selfServiceGet(path, ownerToken)
+	ts.Equal(http.StatusNotFound, status, "the agent is gone")
+}
+
+// --- one owner, several agents ---
+
+// Two agents of one owner stay independent (AC11.4): changing one leaves the other's settings and credentials as
+// they were, each agent's tokens name only itself as the actor, and one agent cannot redeem a code issued to the
+// other.
+func (ts *PersonalAgentTestSuite) TestTwoAgentsOfOneOwnerStayIndependent() {
+	ownerToken := ts.userToken(ts.ownerUsername)
+	second := ts.createOwnedAgent("authorization_code")
+	defer func() { _ = deleteAgent(second.id) }()
+
+	status, before := ts.selfServiceGet("/users/me/agents/"+ts.agentID, ownerToken)
+	ts.Require().Equal(http.StatusOK, status, before)
+	status, body := ts.selfServiceCall(http.MethodPut, "/users/me/agents/"+second.id, ownerToken,
+		ownedAgentBody(second.name, "Books my travel", `["authorization_code","refresh_token"]`,
+			`["https://agent.example.com/other","`+paRedirectURI+`"]`))
+	ts.Require().Equal(http.StatusOK, status, body)
+	status, after := ts.selfServiceGet("/users/me/agents/"+ts.agentID, ownerToken)
+	ts.Require().Equal(http.StatusOK, status, after)
+	ts.JSONEq(before, after, "the other agent's settings are unchanged")
+
+	firstToken := ts.obtainToken(ts.ownerUsername)
+	restore := ts.actAs(second)
+	secondToken := ts.obtainToken(ts.ownerUsername)
+	restore()
+	for agentID, token := range map[string]string{
+		ts.agentID: firstToken.AccessToken, second.id: secondToken.AccessToken,
+	} {
+		claims, err := testutils.DecodeJWTPayloadMap(token)
+		ts.Require().NoError(err)
+		act, ok := claims["act"].(map[string]any)
+		ts.Require().True(ok, "the token names its agent as the actor: %v", claims)
+		ts.Equal(agentID, act["sub"])
+	}
+
+	code, verifier := ts.obtainCode(ts.ownerUsername)
+	restore = ts.actAs(second)
+	status, body = ts.exchangeCode(code, verifier)
+	restore()
+	ts.Equal(http.StatusBadRequest, status, "a code issued to one agent is refused for the other: %s", body)
+	status, body = ts.exchangeCode(code, verifier)
+	ts.Equal(http.StatusOK, status, "the code still belongs to the agent it was issued to: %s", body)
+}
+
+// Acting on one agent leaves the owner's other agents and the owner's own session working (AC11.5): after the
+// owner changes and deletes one agent, a refresh token of another agent still works, and so does the owner's
+// own token.
+func (ts *PersonalAgentTestSuite) TestActingOnOneAgentLeavesTheOthersWorking() {
+	ownerToken := ts.userToken(ts.ownerUsername)
+	acted := ts.createOwnedAgent("authorization_code", "refresh_token")
+	defer func() { _ = deleteAgent(acted.id) }()
+	kept := ts.createOwnedAgent("authorization_code", "refresh_token")
+	defer func() { _ = deleteAgent(kept.id) }()
+
+	restore := ts.actAs(kept)
+	defer restore()
+	keptToken := ts.obtainToken(ts.ownerUsername)
+	ts.Require().NotEmpty(keptToken.RefreshToken)
+
+	path := "/users/me/agents/" + acted.id
+	status, body := ts.selfServiceCall(http.MethodPut, path, ownerToken,
+		ownedAgentBody(acted.name, "Changed", `["authorization_code"]`, `["`+paRedirectURI+`"]`))
+	ts.Require().Equal(http.StatusOK, status, body)
+	status, body = ts.selfServiceCall(http.MethodDelete, path, ownerToken, "")
+	ts.Require().Equal(http.StatusNoContent, status, body)
+
+	status, body = ts.postToken(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {keptToken.RefreshToken}})
+	ts.Equal(http.StatusOK, status, "the other agent's refresh token still works: %s", body)
+	status, body = ts.selfServiceGet("/users/me/agents/"+kept.id, ownerToken)
+	ts.Equal(http.StatusOK, status, "the owner's own token still works: %s", body)
 }
 
 // --- signing the owner in ---
@@ -314,6 +589,49 @@ func (ts *PersonalAgentTestSuite) personalAgentRequest(owner string, grants ...s
 	return request
 }
 
+// ownedAgent is a personal agent of the suite's owner created through the agent API, with its client credentials.
+type ownedAgent struct {
+	id           string
+	name         string
+	clientID     string
+	clientSecret string
+}
+
+// createOwnedAgent creates another personal agent for the suite's owner with the given grants.
+func (ts *PersonalAgentTestSuite) createOwnedAgent(grants ...string) ownedAgent {
+	ts.T().Helper()
+	request := ts.personalAgentRequest(ts.ownerID, grants...)
+	resp, err := doPost(testServerURL+agentBasePath, request)
+	ts.Require().NoError(err)
+	defer resp.Body.Close()
+	body := readBody(resp)
+	ts.Require().Equal(http.StatusCreated, resp.StatusCode, body)
+	var created struct {
+		ID                string `json:"id"`
+		InboundAuthConfig []struct {
+			Config struct {
+				ClientID     string `json:"clientId"`
+				ClientSecret string `json:"clientSecret"`
+			} `json:"config"`
+		} `json:"inboundAuthConfig"`
+	}
+	ts.Require().NoError(json.Unmarshal([]byte(body), &created))
+	ts.Require().Len(created.InboundAuthConfig, 1)
+	name, _ := request["attributes"].(map[string]interface{})["name"].(string)
+	agent := ownedAgent{id: created.ID, name: name, clientID: created.InboundAuthConfig[0].Config.ClientID,
+		clientSecret: created.InboundAuthConfig[0].Config.ClientSecret}
+	ts.Require().NotEmpty(agent.clientID)
+	ts.Require().NotEmpty(agent.clientSecret)
+	return agent
+}
+
+// actAs makes the suite's OAuth helpers act as agent until the returned function restores the suite's agent.
+func (ts *PersonalAgentTestSuite) actAs(agent ownedAgent) func() {
+	clientID, clientSecret := ts.clientID, ts.clientSecret
+	ts.clientID, ts.clientSecret = agent.clientID, agent.clientSecret
+	return func() { ts.clientID, ts.clientSecret = clientID, clientSecret }
+}
+
 func testOUIDForPersonalAgents(ts *PersonalAgentTestSuite) string {
 	return ts.seededPersonType().OUID
 }
@@ -356,7 +674,7 @@ func (ts *PersonalAgentTestSuite) registerAgent() {
 		"username": ts.ownerUsername, "password": paPassword,
 	}})
 	step = ts.flowStep(step, testutils.PersonalAgentDetailsAction, map[string]interface{}{"inputs": map[string]string{
-		"name": "pa_suite_assistant", "description": "Helps with my calendar", "redirectUris": paRedirectURI,
+		"name": paSuiteAgentName, "description": "Helps with my calendar", "redirectUris": paRedirectURI,
 	}})
 	ts.Require().Equal("COMPLETE", step["flowStatus"], "%v", step)
 	data, _ := step["data"].(map[string]interface{})
@@ -367,6 +685,64 @@ func (ts *PersonalAgentTestSuite) registerAgent() {
 	ts.Require().NotEmpty(ts.agentID)
 	ts.Require().NotEmpty(ts.clientID)
 	ts.Require().NotEmpty(ts.clientSecret)
+}
+
+// userToken signs username in through a public portal application with the default login flow and returns the
+// user's own access token, which carries no actor.
+func (ts *PersonalAgentTestSuite) userToken(username string) string {
+	ts.T().Helper()
+	if ts.portalClientID == "" {
+		authFlowID, err := testutils.GetFlowIDByHandle("default-flow", "AUTHENTICATION")
+		ts.Require().NoError(err)
+		ts.portalClientID = "pa_suite_portal"
+		portalID, err := testutils.CreateApplication(testutils.Application{
+			Name:        "pa_suite_portal",
+			Description: "issues the owner's own token",
+			OUID:        testOUIDForPersonalAgents(ts),
+			Type:        "fullstack",
+			AuthFlowID:  authFlowID,
+			InboundAuthConfig: []map[string]interface{}{{
+				"type": "oauth2",
+				"config": map[string]interface{}{
+					"clientId":                ts.portalClientID,
+					"redirectUris":            []string{paPortalRedirect},
+					"grantTypes":              []string{"authorization_code"},
+					"responseTypes":           []string{"code"},
+					"tokenEndpointAuthMethod": "none",
+					"publicClient":            true,
+					"pkceRequired":            true,
+				},
+			}},
+		})
+		ts.Require().NoError(err)
+		ts.portalAppID = portalID
+	}
+	token, err := testutils.ObtainAccessTokenWithPassword(ts.portalClientID, paPortalRedirect, "openid",
+		username, paPassword, true)
+	ts.Require().NoError(err)
+	return token.AccessToken
+}
+
+// selfServiceGet calls a self-service route with token as the bearer token, or none when it is empty.
+func (ts *PersonalAgentTestSuite) selfServiceGet(path, token string) (int, string) {
+	ts.T().Helper()
+	return ts.selfServiceCall(http.MethodGet, path, token, "")
+}
+
+// selfServiceCall calls a self-service route with the given method and JSON body, and token as the bearer
+// token, or none when it is empty.
+func (ts *PersonalAgentTestSuite) selfServiceCall(method, path, token, body string) (int, string) {
+	ts.T().Helper()
+	req, err := http.NewRequest(method, testServerURL+path, strings.NewReader(body))
+	ts.Require().NoError(err)
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := testutils.GetRawHTTPClient().Do(req)
+	ts.Require().NoError(err)
+	defer resp.Body.Close()
+	return resp.StatusCode, readBody(resp)
 }
 
 // flowStep posts one anonymous registration step. previous carries the execution forward; the first
