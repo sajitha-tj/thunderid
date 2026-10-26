@@ -127,6 +127,8 @@ var defaultMessages = map[string]string{
 	"error.agentservice.organization_unit_not_found_description": "The specified organization unit does not exist",
 	"error.agentservice.owner_not_found": "Owner not found",
 	"error.agentservice.owner_not_found_description": "The specified owner does not match any known user, application, or agent",
+	"error.agentservice.owner_suspended": "Owner suspended",
+	"error.agentservice.owner_suspended_description": "A personal agent cannot be created for a user whose account is suspended",
 	"error.agentservice.pkce_requires_authorization_code_description": "PKCE can only be enabled when the authorization_code grant type is selected",
 	"error.agentservice.private_key_jwt_cannot_have_client_secret_description": "private_key_jwt authentication method cannot have a client secret",
 	"error.agentservice.private_key_jwt_requires_certificate_description": "private_key_jwt authentication method requires a certificate",

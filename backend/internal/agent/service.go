@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	tidcommon "github.com/thunder-id/thunderid/pkg/thunderidengine/common"
 	"github.com/thunder-id/thunderid/pkg/thunderidengine/providers"
@@ -23,6 +24,7 @@ import (
 	inboundmodel "github.com/thunder-id/thunderid/internal/inboundclient/model"
 	oauthutils "github.com/thunder-id/thunderid/internal/oauth/oauth2/utils"
 	oupkg "github.com/thunder-id/thunderid/internal/ou"
+	"github.com/thunder-id/thunderid/internal/revocation"
 	"github.com/thunder-id/thunderid/internal/role"
 	serverconst "github.com/thunder-id/thunderid/internal/system/constants"
 	declarativeresource "github.com/thunder-id/thunderid/internal/system/declarative_resource"
@@ -53,6 +55,7 @@ type AgentServiceInterface interface {
 		clientID, clientSecret string, client inboundmodel.InboundClient, svcErr *tidcommon.ServiceError)
 	GetResourceDependencies(
 		ctx context.Context, resourceType, id string) ([]resourcedependency.ResourceDependency, error)
+	CascadeDeleteDependencies(ctx context.Context, resourceType, id string) (int, error)
 	SetDependencyRegistry(r resourcedependency.Registry)
 	GetClientRules(ctx context.Context, agentID string) (*providers.ClientRules, *tidcommon.ServiceError)
 	GetOwnedAgents(ctx context.Context, ownerID string, kind providers.AgentKind, limit, offset int) (
@@ -60,6 +63,9 @@ type AgentServiceInterface interface {
 	UpdateOwnedAgent(ctx context.Context, ownerID, agentID string, kind providers.AgentKind,
 		req *model.UpdateOwnedAgentRequest) (*model.AgentCompleteResponse, *tidcommon.ServiceError)
 	DeleteOwnedAgent(ctx context.Context, ownerID, agentID string, kind providers.AgentKind) *tidcommon.ServiceError
+	SuspendOwnedAgent(ctx context.Context, ownerID, agentID string, kind providers.AgentKind) *tidcommon.ServiceError
+	UnsuspendOwnedAgent(ctx context.Context, ownerID, agentID string, kind providers.AgentKind) *tidcommon.ServiceError
+	SuspendOwnedAgents(ctx context.Context, ownerID string, kind providers.AgentKind) (int, *tidcommon.ServiceError)
 }
 
 type agentService struct {
@@ -73,7 +79,13 @@ type agentService struct {
 	roleService          role.RoleServiceInterface
 	valueCapturer        declarativeresource.ValueCapturer
 	entityTypeService    entitytype.EntityTypeServiceInterface
+	revoker              revocation.CriteriaRevoker
+	resolveLifetime      artifactLifetimeResolver
 }
+
+// artifactLifetimeResolver reports how long an artifact issued to the given OAuth client can remain valid, so a
+// revocation of that client's tokens is kept at least that long.
+type artifactLifetimeResolver func(client *providers.OAuthClient) time.Duration
 
 func newAgentService(
 	authzService sysauthz.SystemAuthorizationServiceInterface,
@@ -84,6 +96,8 @@ func newAgentService(
 	governance identitygovernance.IdentityGovernanceServiceInterface,
 	valueCapturer declarativeresource.ValueCapturer,
 	entityTypeService entitytype.EntityTypeServiceInterface,
+	revoker revocation.CriteriaRevoker,
+	artifactLifetime artifactLifetimeResolver,
 ) AgentServiceInterface {
 	return &agentService{
 		logger:               log.GetLogger().With(log.String(log.LoggerKeyComponentName, "AgentService")),
@@ -95,6 +109,8 @@ func newAgentService(
 		roleService:          roleService,
 		valueCapturer:        valueCapturer,
 		entityTypeService:    entityTypeService,
+		revoker:              revoker,
+		resolveLifetime:      artifactLifetime,
 	}
 }
 
@@ -141,6 +157,15 @@ func (s *agentService) CreateAgent(ctx context.Context, agent *providers.Agent) 
 		}
 		if ownerEntity.Category != providers.EntityCategoryUser {
 			return nil, &ErrorOwnerNotFound
+		}
+		// A suspended owner's personal agents are suspended with them, so none is created for one.
+		suspended, svcErr := s.governance.IsSuspended(ctx, owner)
+		if svcErr != nil {
+			s.logger.Error(ctx, "Failed to check the owner's suspension", log.String("errorCode", svcErr.Code))
+			return nil, &tidcommon.InternalServerError
+		}
+		if suspended {
+			return nil, &ErrorOwnerSuspended
 		}
 	} else { // default enterprise-owned agents
 		if owner == "" {
@@ -358,7 +383,7 @@ func (s *agentService) UpdateOwnedAgent(ctx context.Context, ownerID, agentID st
 		return nil, &tidcommon.InternalServerError
 	}
 
-	updated, err := s.entityService.GetEntityProfile(ctx, agentID)
+	updated, err := s.entityService.GetEntity(ctx, agentID)
 	if err != nil {
 		s.logger.Error(ctx, "Failed to read the updated agent", log.String("agentID", agentID), log.Error(err))
 		return nil, &tidcommon.InternalServerError
@@ -470,7 +495,8 @@ func (s *agentService) loadOwnedAgent(ctx context.Context, action security.Actio
 	if ownerID == "" || agentID == "" {
 		return nil, &ErrorAgentNotFound
 	}
-	e, err := s.entityService.GetEntityProfile(ctx, agentID)
+	// The runtime state is loaded too, so the owner's read reports the agent's status.
+	e, err := s.entityService.GetEntity(ctx, agentID)
 	if err != nil {
 		if errors.Is(err, entity.ErrEntityNotFound) {
 			return nil, &ErrorAgentNotFound
@@ -486,6 +512,142 @@ func (s *agentService) loadOwnedAgent(ctx context.Context, action security.Actio
 		return nil, svcErr
 	}
 	return e, nil
+}
+
+// SuspendOwnedAgent places the owner's suspension on an agent of the given kind that the owner owns, after revoking
+// the tokens issued to its client. An agent the owner already suspended is left as it is. The organization's
+// suspension, if any, is independent of it.
+func (s *agentService) SuspendOwnedAgent(ctx context.Context, ownerID, agentID string,
+	kind providers.AgentKind) *tidcommon.ServiceError {
+	e, svcErr := s.loadOwnedAgent(ctx, security.ActionUpdateAgent, ownerID, agentID, kind)
+	if svcErr != nil {
+		return svcErr
+	}
+	_, svcErr = s.suspendByOwner(ctx, []providers.Entity{*e})
+	return svcErr
+}
+
+// UnsuspendOwnedAgent lifts the owner's suspension of an agent of the given kind that the owner owns. An agent the
+// owner has not suspended is left as it is, and the organization's suspension, if any, stays.
+func (s *agentService) UnsuspendOwnedAgent(ctx context.Context, ownerID, agentID string,
+	kind providers.AgentKind) *tidcommon.ServiceError {
+	if _, svcErr := s.loadOwnedAgent(ctx, security.ActionUpdateAgent, ownerID, agentID, kind); svcErr != nil {
+		return svcErr
+	}
+	svcErr := s.governance.Unsuspend(ownerGovernanceContext(ctx), agentID)
+	if svcErr == nil || svcErr.Code == identitygovernance.ErrorNotApplicable.Code {
+		return nil
+	}
+	s.logger.Error(ctx, "Failed to lift the owner's suspension", log.String("agentID", agentID),
+		log.String("errorCode", svcErr.Code))
+	return &tidcommon.InternalServerError
+}
+
+// SuspendOwnedAgents places the owner's suspension on every agent of the given kind that the owner owns and has not
+// already suspended, after revoking their tokens in one batch. It returns how many it suspended.
+func (s *agentService) SuspendOwnedAgents(ctx context.Context, ownerID string,
+	kind providers.AgentKind) (int, *tidcommon.ServiceError) {
+	if ownerID == "" {
+		return 0, &ErrorAgentNotFound
+	}
+	entities, err := s.entityService.GetEntityListBySystemAttributes(ctx, providers.EntityCategoryAgent,
+		entity.SystemAttributeQuery{
+			SystemAttributes: map[string]interface{}{fieldOwner: ownerID, fieldKind: string(kind)},
+		}, serverconst.MaxCompositeStoreRecords, 0)
+	if err != nil {
+		s.logger.Error(ctx, "Failed to list the owner's agents", log.Error(err))
+		return 0, &tidcommon.InternalServerError
+	}
+	return s.suspendByOwner(ctx, entities)
+}
+
+// suspendByOwner revokes the tokens issued to each agent not already suspended by its owner, in one batch, then
+// places the owner's suspension on it. The agents carry their runtime state. It returns how many it suspended. A
+// failed revocation suspends none.
+func (s *agentService) suspendByOwner(ctx context.Context, agents []providers.Entity) (int, *tidcommon.ServiceError) {
+	reads := s.governance.ReadAccess(ctx, agents)
+	cutoff := time.Now().Add(getTokenLeeway()).UTC()
+	targets := make([]string, 0, len(agents))
+	revocations := make([]revocation.CriteriaRevocation, 0, len(agents))
+	for i := range agents {
+		if suspendedByOwner(reads[i].Status) {
+			continue
+		}
+		targets = append(targets, agents[i].ID)
+		// A personal agent's tokens carry its owner as the subject, so its client is what identifies them.
+		if clientID := readSystemAttributes(agents[i].SystemAttributes).ClientID; clientID != "" {
+			revocations = append(revocations, revocation.CriteriaRevocation{
+				Criterion: revocation.Criterion{Type: revocation.CriterionTypeApplicationKey, Value: clientID},
+				Mode:      revocation.ModeBeforeAction,
+				Cutoff:    cutoff,
+				Reason:    revocation.ReasonIdentitySuspended,
+				TTL:       s.revocationTTL(ctx, clientID, suspensionRevocationTTL),
+			})
+		}
+	}
+	if len(revocations) > 0 {
+		if svcErr := s.revoker.RevokeCriteriaBatch(ctx, revocations); svcErr != nil {
+			s.logger.Error(ctx, "Failed to revoke the agents' tokens", log.String("errorCode", svcErr.Code))
+			return 0, &tidcommon.InternalServerError
+		}
+	}
+
+	ownerCtx := ownerGovernanceContext(ctx)
+	for i, agentID := range targets {
+		if svcErr := s.governance.Suspend(ownerCtx, agentID, ""); svcErr != nil {
+			s.logger.Error(ctx, "Failed to place the owner's suspension", log.String("agentID", agentID),
+				log.String("errorCode", svcErr.Code))
+			return i, &tidcommon.InternalServerError
+		}
+	}
+	return len(targets), nil
+}
+
+// SuspensionDependents names the identities suspended together with a user: their personal agents, declarative ones
+// included, since governance holds their state apart from the file. Other resource types have none.
+func (s *agentService) SuspensionDependents(ctx context.Context, resourceType, id string) ([]string, error) {
+	if resourceType != resourcedependency.ResourceTypeUser {
+		return nil, nil
+	}
+	agents, err := s.entityService.GetEntityListBySystemAttributes(ctx, providers.EntityCategoryAgent,
+		entity.SystemAttributeQuery{SystemAttributes: map[string]interface{}{
+			fieldOwner: id, fieldKind: string(providers.AgentKindPersonalAssistant),
+		}}, serverconst.MaxCompositeStoreRecords, 0)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list the personal agents of the user: %w", err)
+	}
+	ids := make([]string, 0, len(agents))
+	for _, agent := range agents {
+		ids = append(ids, agent.ID)
+	}
+	return ids, nil
+}
+
+// revocationTTL is how long a revocation of the tokens issued to an agent's client must be kept: the longest an
+// artifact issued to that client can live, and at least floor. When the client cannot be resolved, floor is kept,
+// and zero leaves the revocation service on its default.
+func (s *agentService) revocationTTL(ctx context.Context, clientID string, floor time.Duration) time.Duration {
+	if s.resolveLifetime == nil {
+		return floor
+	}
+	client, err := s.inboundClientService.GetOAuthClientByClientID(ctx, clientID)
+	if err != nil || client == nil {
+		s.logger.Warn(ctx, "Failed to resolve the agent's token lifetime for a revocation; keeping the default",
+			log.MaskedString("clientID", clientID))
+		return floor
+	}
+	return max(floor, s.resolveLifetime(client))
+}
+
+// ownerGovernanceContext marks a governance call as the owner's. It runs with the runtime context, since
+// governance authorizes administrators and the owner's own checks have already run.
+func ownerGovernanceContext(ctx context.Context) context.Context {
+	return identitygovernance.WithOwnerApplier(security.WithRuntimeContext(ctx))
+}
+
+// suspendedByOwner reports whether a status carries the owner's suspension.
+func suspendedByOwner(status providers.AccessStatusReport) bool {
+	return status.Details != nil && slices.Contains(status.Details.AppliedBy, providers.SuspensionAppliedByOwner)
 }
 
 // GetAgentList returns a paginated list of agents.
@@ -865,15 +1027,73 @@ func (s *agentService) getAgentsByOwner(
 	displayPaths := s.resolveDisplayPaths(ctx, entityTypes(entities))
 	usages := make([]resourcedependency.ResourceDependency, 0)
 	for _, e := range entities {
-		// An agent cannot exist without its owner, so ownership blocks the owner's deletion.
+		// An agent cannot exist without its owner, so ownership blocks the owner's deletion, except for a personal
+		// agent the owner's deletion removes with them (see CascadeDeleteDependencies).
+		behavior := resourcedependency.BehaviorRestrict
+		if s.deletedWithOwner(&e) {
+			behavior = resourcedependency.BehaviorCascade
+		}
 		usages = append(usages, resourcedependency.ResourceDependency{
 			ResourceType:     resourcedependency.ResourceTypeAgent,
 			ID:               e.ID,
 			DisplayName:      sysutils.ResolveDisplay(e.ID, e.Type, e.Attributes, displayPaths),
-			BehaviorOnDelete: resourcedependency.BehaviorRestrict,
+			BehaviorOnDelete: behavior,
 		})
 	}
 	return usages, nil
+}
+
+// deletedWithOwner reports whether an agent is deleted together with its owner: a personal agent that can be
+// deleted at runtime, where its tokens can be revoked first. A declarative agent can only be removed from its
+// file, and without a revoker, which is the control plane, its tokens could not be revoked, so it keeps blocking
+// the owner's deletion.
+func (s *agentService) deletedWithOwner(e *providers.Entity) bool {
+	return s.revoker != nil && !e.IsReadOnly &&
+		readSystemAttributes(e.SystemAttributes).Kind == providers.AgentKindPersonalAssistant
+}
+
+// CascadeDeleteDependencies implements resourcedependency.CascadeDeleter. It deletes the personal agents of a
+// deleted user, after revoking every token issued to their clients; other resource types have no agents to delete.
+// It returns how many agents it deleted, and fails on the first error so the user's deletion is aborted.
+func (s *agentService) CascadeDeleteDependencies(ctx context.Context, resourceType, id string) (int, error) {
+	if resourceType != resourcedependency.ResourceTypeUser {
+		return 0, nil
+	}
+	entities, err := s.entityService.GetEntityListBySystemAttributes(ctx, providers.EntityCategoryAgent,
+		entity.SystemAttributeQuery{SystemAttributes: map[string]interface{}{fieldOwner: id}},
+		serverconst.MaxCompositeStoreRecords, 0)
+	if err != nil {
+		return 0, fmt.Errorf("failed to list the user's agents: %w", err)
+	}
+
+	agentIDs := make([]string, 0, len(entities))
+	revocations := make([]revocation.CriteriaRevocation, 0, len(entities))
+	for i := range entities {
+		if !s.deletedWithOwner(&entities[i]) {
+			continue
+		}
+		agentIDs = append(agentIDs, entities[i].ID)
+		if clientID := readSystemAttributes(entities[i].SystemAttributes).ClientID; clientID != "" {
+			revocations = append(revocations, revocation.CriteriaRevocation{
+				Criterion: revocation.Criterion{Type: revocation.CriterionTypeApplicationKey, Value: clientID},
+				Mode:      revocation.ModeAll,
+				Reason:    revocation.ReasonUserDeleted,
+				TTL:       s.revocationTTL(ctx, clientID, 0),
+			})
+		}
+	}
+	if len(revocations) > 0 {
+		if svcErr := s.revoker.RevokeCriteriaBatch(ctx, revocations); svcErr != nil {
+			return 0, fmt.Errorf("failed to revoke the tokens of the user's agents: %s", svcErr.Code)
+		}
+	}
+
+	for i, agentID := range agentIDs {
+		if svcErr := s.deleteAgent(ctx, agentID); svcErr != nil {
+			return i, fmt.Errorf("failed to delete agent %s: %s", agentID, svcErr.Code)
+		}
+	}
+	return len(agentIDs), nil
 }
 
 // GetAgentGroups returns the groups the agent belongs to.

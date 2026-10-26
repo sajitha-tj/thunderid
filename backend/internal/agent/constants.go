@@ -4,6 +4,8 @@
 package agent
 
 import (
+	"time"
+
 	authnprovidercm "github.com/thunder-id/thunderid/internal/authnprovider/common"
 	"github.com/thunder-id/thunderid/pkg/thunderidengine/providers"
 )
@@ -23,6 +25,10 @@ const (
 	// fieldKind holds the agent kind, set at creation and preserved across updates.
 	fieldKind = "kind"
 )
+
+// suspensionRevocationTTL is how long an owner's suspension keeps its revocation of the agent's tokens at the
+// least, the same as the suspend flow's.
+const suspensionRevocationTTL = 7 * 24 * time.Hour
 
 // personalAgentAuthFlowHandle is the shipped login flow for a personal agent whose registration flow fixes none.
 const personalAgentAuthFlowHandle = "default-personal-agent-auth-flow"

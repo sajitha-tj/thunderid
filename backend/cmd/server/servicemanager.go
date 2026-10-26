@@ -503,7 +503,8 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 	exporters = append(exporters, applicationExporter)
 
 	agentService, agentExporter, err := agent.Initialize(mux, entityService, inboundClientService, ouService,
-		roleService, ouAuthzService, governanceService, nil, entityTypeService)
+		roleService, ouAuthzService, governanceService, nil, entityTypeService, revocationSvc,
+		artifactLifetime)
 	fatalOnError(ctx, logger, err, "Failed to initialize AgentService")
 	exporters = append(exporters, agentExporter)
 
@@ -527,6 +528,7 @@ func registerServices(mux *http.ServeMux, cacheManager cache.CacheManagerInterfa
 		ou:            ouService,
 		resource:      resourceService,
 		notifTemplate: notifTemplateSvc,
+		governance:    governanceService,
 	}, applicationService, agentService, flowMgtService, roleAssignmentService, roleService,
 		groupService, ouService, ouUserResolver, ouGroupResolver, entityTypeService, resourceService,
 		sharingService, notifTemplateSvc)
@@ -658,6 +660,7 @@ type dependencyConsumers struct {
 	ou            ou.ConfigurableOUService
 	resource      resource.ResourceServiceInterface
 	notifTemplate notificationtemplate.NotificationTemplateServiceInterface
+	governance    identitygovernance.IdentityGovernanceServiceInterface
 }
 
 // registerDependencyRegistry builds the dependency registry from the given providers and wires it
@@ -676,6 +679,7 @@ func registerDependencyRegistry(consumers dependencyConsumers, providers ...reso
 	consumers.ou.SetDependencyRegistry(registry)
 	consumers.resource.SetDependencyRegistry(registry)
 	consumers.notifTemplate.SetDependencyRegistry(registry)
+	consumers.governance.SetDependencyRegistry(registry)
 }
 
 // unregisterServices unregisters all services that require cleanup during shutdown.
