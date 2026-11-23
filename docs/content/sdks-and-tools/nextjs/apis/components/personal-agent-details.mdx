@@ -1,0 +1,53 @@
+---
+displayed_sidebar: null
+title: <PersonalAgentDetails />
+docType: reference
+description: Shows one of the signed-in user's personal agents and lets the user edit, delete, and suspend it, in Next.js apps, with the access token kept on the server.
+---
+
+# `<PersonalAgentDetails />`
+
+The `PersonalAgentDetails` component shows one of the signed-in user's personal agents: its name, description, client ID, status, attributes, grant types, and redirect URIs. When your application turns them on, the user can also edit the agent, delete it, and place or lift their own suspension of it. Each action is off by default.
+
+The component reads and changes the agent through server actions, so the access token stays on the server. The server actions use the session's access token, and `endpoints.usersMeAgents` when your configuration sets it. It renders `BasePersonalAgentDetails` from `@thunderid/react`, so its props, built-in UI, translation keys, and render props match the [React SDK's `<PersonalAgentDetails />`](../../../../react/apis/components/personal-agent-details).
+
+## Usage
+
+```jsx title="app/account/agents/[agentId]/AgentDetails.tsx" showLineNumbers
+'use client'
+import { useRouter } from 'next/navigation'
+import { PersonalAgentDetails } from '@thunderid/nextjs'
+
+export default function AgentDetails({ agentId }) {
+  const router = useRouter()
+
+  return (
+    <PersonalAgentDetails agentId={agentId} editable deletable suspendable onDeleted={() => router.push('/account/agents')} />
+  )
+}
+```
+
+:::note
+An agent the user does not own, or one outside the organization unit the access token names, is not found.
+:::
+
+## Props
+
+| Prop | Type | Required | Default | Description |
+| :--- | :--- | :---: | :--- | :--- |
+| `agentId` | `string` | ✅ | | Identifier of the agent to show. |
+| `editable` | `boolean` | ❌ | `false` | Lets the user edit the agent's name, description, attributes, grant types, and redirect URIs. |
+| `deletable` | `boolean` | ❌ | `false` | Lets the user delete the agent. The component asks the user to confirm first. |
+| `suspendable` | `boolean` | ❌ | `false` | Lets the user place or lift their own suspension of the agent. Suspending asks the user to confirm first. |
+| `onDeleted` | `() => void` | ❌ | | Called after the agent is deleted. Use it to navigate away, since the agent no longer exists. |
+| `actions` | `ReactNode` | ❌ | | Controls rendered next to the agent's name. |
+| `className` | `string` | ❌ | | Additional CSS class names. |
+| `preferences` | `Preferences` | ❌ | | Component-level preference overrides, including i18n. |
+| `children` | `(props: BasePersonalAgentDetailsRenderProps) => ReactNode` | ❌ | | Render function that replaces the built-in view. See the [React `BasePersonalAgentDetails`](../../../../react/apis/components/personal-agent-details#basepersonalagentdetails). |
+
+The editing, suspension, and confirmation behavior is the same as in the React SDK. See [Behavior](../../../../react/apis/components/personal-agent-details#behavior).
+
+## Related
+
+- [`<PersonalAgentList />`](../personal-agent-list) lists the agents the user can open.
+- [Personal Agents](../../../../javascript/apis/user/personal-agents) documents the `/users/me/agents` operations.

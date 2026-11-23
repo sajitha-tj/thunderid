@@ -222,6 +222,40 @@ Updates the user profile via `/scim2/Me`.
 Future<User> updateUserProfile(Map<String, dynamic> payload)
 ```
 
+## Personal Agents
+
+These methods let the signed-in user manage the agents they own, such as an assistant that acts on their behalf, through the `/users/me/agents` API. They are the user's own requests: the native iOS and Android SDKs send them with the user's access token, like the other `/users/me` requests, never through a management fetcher. The [`PersonalAgentList`](../components/personal-agent-list) and [`PersonalAgentDetails`](../components/personal-agent-details) widgets call them for you.
+
+The server works on the agents in the organization unit the access token names, so the application must issue the `ouId` attribute in its access token. The token must be the user's own: the server refuses a delegated token, such as an agent's token for its owner.
+
+```dart
+Future<ManagementPage<Agent>> getMeAgents({String? kind, int? limit, int? offset})
+Future<Agent> getMeAgent(String id)
+Future<Agent> updateMeAgent(String id, UpdateMeAgentRequest request)
+Future<void> deleteMeAgent(String id)
+Future<void> suspendMeAgent(String id)
+Future<void> unsuspendMeAgent(String id)
+Future<SuspendAllMeAgentsResponse> suspendAllMeAgents()
+```
+
+| Method | Request | Description |
+| :--- | :--- | :--- |
+| `getMeAgents` | `GET /users/me/agents` | Lists the agents the user owns. Pass `AgentKind.personal` as `kind` to list only personal agents. |
+| `getMeAgent` | `GET /users/me/agents/{id}?include=display` | Returns one of the user's agents. Any other agent is not found. |
+| `updateMeAgent` | `PUT /users/me/agents/{id}` | Replaces the description, attributes, grant types, and redirect URIs, and returns the updated agent. |
+| `deleteMeAgent` | `DELETE /users/me/agents/{id}` | Deletes the agent. |
+| `suspendMeAgent` | `POST /users/me/agents/{id}/suspend` | Places the user's own suspension on the agent, after the server revokes the tokens issued to it. |
+| `unsuspendMeAgent` | `POST /users/me/agents/{id}/unsuspend` | Lifts the user's own suspension. A suspension another party placed, such as the organization's, stays in force. |
+| `suspendAllMeAgents` | `POST /users/me/agents/suspend` | Places the user's own suspension on every personal agent the user has not already suspended, and returns `suspendedCount`. |
+
+An update replaces what it names, so `UpdateMeAgentRequest` always carries the attributes, the grant types, and the redirect URIs, empty lists included. Start it from the agent as read: `PersonalAgentFormValues.fromAgent(agent)` holds the editable values, and `updateRequest(agent)` builds the request, sending back the attributes the form does not edit.
+
+The user's suspension is independent of the organization's. `agent.status?.suspendedBy` lists who holds an agent suspended, read from `status.details.appliedBy`. `MeAgentSuspensionAction.available(status)` returns `unsuspend` while the user holds the agent suspended, and `suspend` otherwise.
+
+A blank or whitespace-only `id` throws `invalidInput` before any request. HTTP 403 throws `forbidden`, and HTTP 404 throws `notFound`. When sign-in runs on a backend, these methods throw `operationNotSupported`, like the other `/users/me` methods.
+
+`ThunderIDProvider.of(context).personalAgentResources` wraps these methods as queries and mutations: `meAgentsQuery`, `meAgentQuery`, `updateMeAgentMutation`, `deleteMeAgentMutation`, `meAgentSuspensionMutation`, and `suspendAllMeAgentsMutation`.
+
 ## Error Handling
 
 All async methods throw `IAMException` on failure:
@@ -261,6 +295,9 @@ try {
 | `confirmationCodeInvalid` | The confirmation code is not valid |
 | `confirmationCodeExpired` | The confirmation code has expired |
 | `networkError` | A network request failed |
+| `forbidden` | The server returned HTTP 403 |
+| `notFound` | The server returned HTTP 404 |
+| `operationNotSupported` | The operation is not available, for example a `/users/me` method when sign-in runs on a backend |
 | `requestTimeout` | The request timed out |
 | `serverError` | The server returned an error response |
 | `unknownError` | An unexpected error occurred |

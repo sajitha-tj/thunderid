@@ -1,0 +1,101 @@
+---
+displayed_sidebar: null
+title: PersonalAgentList
+docType: reference
+description: SwiftUI list of the personal agents the signed-in user owns, a page at a time, which can let the user suspend them all.
+---
+
+# `PersonalAgentList`
+
+The `PersonalAgentList` view lists the personal agents the signed-in user owns, a page at a time, with each agent's name, client ID, and status. Choosing an agent calls `onSelect`, so your app decides what to open, for example [`PersonalAgentDetails`](../personal-agent-details) for that agent.
+
+The view reads the agents through [`ThunderIDClient.getMeAgents`](../../thunderid-client#personal-agents), from `GET /users/me/agents?kind=personal-assistant`. These are the signed-in user's own requests: they carry the user's access token through the SDK's own transport, like the other `/users/me` requests, and `http.fetcher` never applies to them.
+
+`PersonalAgentList` requires `.thunderIDProvider(config:)` in its ancestor view hierarchy. The server lists the agents in the organization unit the access token names, so the application must issue the `ouId` attribute in its access token. Without it, the list is empty.
+
+## Usage
+
+```swift
+import SwiftUI
+import ThunderID
+import ThunderIDSwiftUI
+
+struct MyAgents: View {
+    @State private var selected: BasicAgent?
+
+    var body: some View {
+        VStack {
+            PersonalAgentList(
+                selectedAgentId: selected?.id,
+                onSelect: { selected = $0 },
+                suspendable: true
+            )
+            if let agent = selected {
+                PersonalAgentDetails(
+                    agentId: agent.id,
+                    editable: true,
+                    deletable: true,
+                    suspendable: true,
+                    onDeleted: { selected = nil }
+                )
+            }
+        }
+    }
+}
+```
+
+## Parameters
+
+| Parameter | Type | Required | Default | Description |
+| :--- | :--- | :---: | :--- | :--- |
+| `limit` | `Int` | ❌ | `20` | Page size. |
+| `title` | `String?` | ❌ | | Heading of the list. |
+| `description` | `String?` | ❌ | | Text under the heading. |
+| `selectedAgentId` | `String?` | ❌ | | Identifier of the agent to highlight. |
+| `onSelect` | `((BasicAgent) -> Void)?` | ❌ | | Called when an agent is chosen. Rows are selectable only when set. |
+| `suspendable` | `Bool` | ❌ | `false` | Lets the user suspend all their personal agents at once. The view asks the user to confirm first, then shows how many agents it suspended. |
+| `actions` | `AnyView?` | ❌ | | Controls rendered next to the title. |
+| `content` | `(PersonalAgentListState) -> Content` | ❌ | | Renders custom UI in place of the default list. |
+
+Suspending them all places the user's own suspension on every personal agent the user has not already suspended. It does not lift or change a suspension the organization placed.
+
+## `BasePersonalAgentList`
+
+`BasePersonalAgentList` is the presentational list. It holds no data of its own: pass the page of agents and handle selection, pagination, and suspending them all. Pair it with `ThunderIDState.meAgentsQuery(kind:limit:offset:)` and `suspendAllMeAgentsMutation()`, or any other source.
+
+```swift
+BasePersonalAgentList(
+    agents: agents,
+    totalResults: total,
+    onSelect: { agent in open(agent) },
+    onSuspendAll: { suspendAll() }
+)
+```
+
+### `BasePersonalAgentList` Parameters
+
+| Parameter | Type | Required | Default | Description |
+| :--- | :--- | :---: | :--- | :--- |
+| `agents` | `[BasicAgent]` | ✅ | | The page of agents to show. |
+| `isLoading` | `Bool` | ❌ | `false` | Shows a loading state. |
+| `error` | `String?` | ❌ | `nil` | An error message to show in place of the rows. |
+| `title` | `String?` | ❌ | | Heading of the list. |
+| `description` | `String?` | ❌ | | Text under the heading. |
+| `limit` | `Int` | ❌ | `20` | Page size. |
+| `offset` | `Int` | ❌ | `0` | Offset of the current page. |
+| `totalResults` | `Int?` | ❌ | `agents.count` | Total number of agents, used for pagination. |
+| `selectedAgentId` | `String?` | ❌ | | Identifier of the agent to highlight. |
+| `onPageChange` | `((Int) -> Void)?` | ❌ | | Called with the offset of the page to show. Pagination is hidden when omitted. |
+| `onSelect` | `((BasicAgent) -> Void)?` | ❌ | | Called when an agent is chosen. Rows are selectable only when set. |
+| `actionError` | `String?` | ❌ | `nil` | A translated message about the last suspend-all request. |
+| `isSuspendingAll` | `Bool` | ❌ | `false` | Shows the suspend-all action as in progress. |
+| `onSuspendAll` | `(() -> Void)?` | ❌ | | Suspends every personal agent of the signed-in user. The action is hidden when omitted, and when there are no agents. |
+| `suspendedCount` | `Int?` | ❌ | `nil` | How many agents the last suspend-all request suspended, shown as a notice. |
+| `actions` | `AnyView?` | ❌ | | Controls rendered next to the title. |
+| `content` | `(PersonalAgentListState) -> Content` | ❌ | | Renders custom UI in place of the default list. |
+
+The `content` closure receives a `PersonalAgentListState` with the `agents`, the `isLoading` and `error` state, `limit`, `offset`, `totalResults`, `selectedId`, `onPageChange`, `onSelect`, `actionError`, `isSuspendingAll`, `onSuspendAll`, and `suspendedCount`. `onSuspendAll` is `nil` when suspending them all is not allowed or there are no agents. The built-in list asks the user to confirm before it calls `onSuspendAll`, so a custom `content` must ask too.
+
+## Internationalization
+
+The title, empty message, suspend-all labels, and messages come from the `user.agents` keys in the SDK's translations, available in all nine locales.

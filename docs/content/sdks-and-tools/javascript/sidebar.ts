@@ -104,6 +104,11 @@ const sidebar: SidebarsConfig = {
         },
         {
           type: 'doc',
+          id: 'sdks-and-tools/javascript/apis/user/personal-agents',
+          label: 'Personal Agents',
+        },
+        {
+          type: 'doc',
           id: 'sdks-and-tools/javascript/apis/user/schemas',
           label: 'SCIM2 Schemas',
         },

@@ -215,6 +215,76 @@ sections:
         }
 
         export default Header
+    - group: Components
+      kind: component
+      name: <PersonalAgentList />
+      description: 'The `PersonalAgentList` component lists the personal agents the signed-in user owns, a page at a time, with each agent''s name, client ID, and status. Selecting an agent reports it through `onSelect`, so your application decides what to open. The access token stays on the server.'
+      rowsLabel: Props
+      rows:
+      - name: suspendable
+        type: 'boolean'
+        tag: optional
+        description: 'Lets the user suspend all their personal agents at once, after confirming. Defaults to false'
+      - name: limit
+        type: 'number'
+        tag: optional
+        description: 'Page size. Defaults to 20'
+      - name: onSelect
+        type: '(agent: BasicAgent) => void'
+        tag: optional
+        description: 'Called when an agent is chosen. Rows are selectable only when set'
+      - name: selectedAgentId
+        type: 'string'
+        tag: optional
+        description: 'Identifier of the agent to highlight'
+      example: |-
+        'use client'
+        import { useRouter } from 'next/navigation'
+        import { PersonalAgentList } from '@thunderid/nextjs'
+
+        export default function AgentsPage() {
+          const router = useRouter()
+
+          return <PersonalAgentList suspendable onSelect={(agent) => router.push(`/account/agents/${agent.id}`)} />
+        }
+    - group: Components
+      kind: component
+      name: <PersonalAgentDetails />
+      description: 'The `PersonalAgentDetails` component shows one of the signed-in user''s personal agents. When the app turns them on, the user can also edit the agent, delete it, and place or lift their own suspension of it. Each action is off by default.'
+      rowsLabel: Props
+      rows:
+      - name: agentId
+        type: 'string'
+        tag: required
+        description: 'Identifier of the agent to show'
+      - name: editable
+        type: 'boolean'
+        tag: optional
+        description: 'Lets the user edit the agent. Defaults to false'
+      - name: deletable
+        type: 'boolean'
+        tag: optional
+        description: 'Lets the user delete the agent, after confirming. Defaults to false'
+      - name: suspendable
+        type: 'boolean'
+        tag: optional
+        description: 'Lets the user place or lift their own suspension of the agent. Defaults to false'
+      - name: onDeleted
+        type: '() => void'
+        tag: optional
+        description: 'Called after the agent is deleted, for example to navigate away'
+      example: |-
+        'use client'
+        import { useRouter } from 'next/navigation'
+        import { PersonalAgentDetails } from '@thunderid/nextjs'
+
+        export default function AgentDetails({ agentId }) {
+          const router = useRouter()
+
+          return (
+            <PersonalAgentDetails agentId={agentId} editable deletable suspendable onDeleted={() => router.push('/account/agents')} />
+          )
+        }
 
   - type: quickstart
     id: quickstart

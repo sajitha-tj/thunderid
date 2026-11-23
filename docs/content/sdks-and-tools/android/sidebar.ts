@@ -87,6 +87,16 @@ const sidebar: SidebarsConfig = {
             },
             {
               type: 'doc',
+              id: 'sdks-and-tools/android/apis/components/personal-agent-list',
+              label: 'PersonalAgentList',
+            },
+            {
+              type: 'doc',
+              id: 'sdks-and-tools/android/apis/components/personal-agent-details',
+              label: 'PersonalAgentDetails',
+            },
+            {
+              type: 'doc',
               id: 'sdks-and-tools/android/apis/components/flow-variables-form',
               label: 'FlowVariablesForm',
             },

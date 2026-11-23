@@ -1,0 +1,100 @@
+---
+displayed_sidebar: null
+title: PersonalAgentList
+docType: reference
+description: Flutter widget that lists the personal agents the signed-in user owns, a page at a time, and can let the user suspend them all.
+---
+
+# `PersonalAgentList`
+
+The `PersonalAgentList` widget lists the personal agents the signed-in user owns, a page at a time, with each agent's name, client ID, and status. Choosing an agent calls `onSelect`, so your app decides what to open, for example [`PersonalAgentDetails`](../personal-agent-details) for that agent.
+
+The widget reads the agents through [`ThunderIDClient.getMeAgents`](../../thunder-client#personal-agents), from `GET /users/me/agents?kind=personal-assistant`. These are the signed-in user's own requests: the native iOS and Android SDKs send them with the user's access token, like the other `/users/me` requests, never through a management fetcher.
+
+`PersonalAgentList` requires `ThunderIDProvider` in its ancestor widget tree. The server lists the agents in the organization unit the access token names, so the application must issue the `ouId` attribute in its access token. Without it, the list is empty.
+
+## Usage
+
+```dart
+import 'package:flutter/material.dart';
+import 'package:thunderid_flutter/thunderid_flutter.dart';
+
+class MyAgents extends StatefulWidget {
+  const MyAgents({super.key});
+
+  @override
+  State<MyAgents> createState() => _MyAgentsState();
+}
+
+class _MyAgentsState extends State<MyAgents> {
+  String? _agentId;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        PersonalAgentList(
+          selectedAgentId: _agentId,
+          onSelect: (agent) => setState(() => _agentId = agent.id),
+          suspendable: true,
+        ),
+        if (_agentId != null)
+          PersonalAgentDetails(
+            agentId: _agentId!,
+            editable: true,
+            deletable: true,
+            suspendable: true,
+            onDeleted: () => setState(() => _agentId = null),
+          ),
+      ],
+    );
+  }
+}
+```
+
+## Parameters
+
+| Parameter | Type | Required | Default | Description |
+| :--- | :--- | :---: | :--- | :--- |
+| `limit` | `int` | ❌ | `20` | Page size. |
+| `title` | `String?` | ❌ | | Heading of the list. |
+| `description` | `String?` | ❌ | | Text under the heading. |
+| `selectedAgentId` | `String?` | ❌ | | Identifier of the agent to highlight. |
+| `onSelect` | `ValueChanged<Agent>?` | ❌ | | Called when an agent is chosen. Rows are selectable only when set. |
+| `suspendable` | `bool` | ❌ | `false` | Lets the user suspend all their personal agents at once. The widget asks the user to confirm first, then shows how many agents it suspended. |
+| `actions` | `List<Widget>` | ❌ | `[]` | Controls rendered next to the title. |
+| `preferences` | `ThunderIDPreferences?` | ❌ | | Widget-level preference overrides, including i18n. |
+| `builder` | `AdminWidgetBuilder<PersonalAgentListState>?` | ❌ | | Builds custom UI in place of the default list. |
+
+Suspending them all places the user's own suspension on every personal agent the user has not already suspended. It does not lift or change a suspension the organization placed.
+
+## `BasePersonalAgentList`
+
+`BasePersonalAgentList` is the presentational list. It holds no data of its own: pass the page of agents and handle selection, pagination, and suspending them all. Pair it with `ThunderIDProvider.of(context).personalAgentResources`, or any other source.
+
+| Parameter | Type | Required | Default | Description |
+| :--- | :--- | :---: | :--- | :--- |
+| `agents` | `List<Agent>` | ✅ | | The page of agents to show. |
+| `isLoading` | `bool` | ❌ | `false` | Shows a loading state. |
+| `error` | `String?` | ❌ | | A translated message to show in place of the rows. Never pass the server's text. |
+| `title` | `String?` | ❌ | | Heading of the list. |
+| `description` | `String?` | ❌ | | Text under the heading. |
+| `limit` | `int` | ❌ | `20` | Page size. |
+| `offset` | `int` | ❌ | `0` | Offset of the current page. |
+| `totalResults` | `int?` | ❌ | `agents.length` | Total number of agents, used for pagination. |
+| `selectedAgentId` | `String?` | ❌ | | Identifier of the agent to highlight. |
+| `onPageChange` | `ValueChanged<int>?` | ❌ | | Called with the offset of the page to show. Pagination is hidden when omitted. |
+| `onSelect` | `ValueChanged<Agent>?` | ❌ | | Called when an agent is chosen. Rows are selectable only when set. |
+| `actionError` | `String?` | ❌ | | A translated message about the last suspend-all request. |
+| `isSuspendingAll` | `bool` | ❌ | `false` | Shows the suspend-all action as in progress. |
+| `onSuspendAll` | `VoidCallback?` | ❌ | | Suspends every personal agent of the signed-in user. The action is hidden when omitted, and when there are no agents. |
+| `suspendedCount` | `int?` | ❌ | | How many agents the last suspend-all request suspended, shown as a notice. |
+| `actions` | `List<Widget>` | ❌ | `[]` | Controls rendered next to the title. |
+| `preferences` | `ThunderIDPreferences?` | ❌ | | Widget-level preference overrides, including i18n. |
+| `builder` | `AdminWidgetBuilder<PersonalAgentListState>?` | ❌ | | Builds custom UI in place of the default list. |
+
+The `builder` receives the `BuildContext` and a `PersonalAgentListState` with the `agents`, the `isLoading` and `error` state, `limit`, `offset`, `totalResults`, `selectedAgentId`, `onPageChange`, `onSelect`, `actionError`, `isSuspendingAll`, `onSuspendAll`, and `suspendedCount`. `onSuspendAll` is `null` when suspending them all is not allowed or there are no agents. The built-in list asks the user to confirm before it calls `onSuspendAll`, so a custom `builder` must ask too.
+
+## Internationalization
+
+The title, empty message, suspend-all labels, and messages come from the `user.agents` keys in the SDK's translations, available in all nine locales.

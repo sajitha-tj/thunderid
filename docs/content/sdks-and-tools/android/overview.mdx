@@ -142,6 +142,8 @@ fun ContentView() {
 | `BaseUserProfile(onSaved, onError, content)` | Builder variant with full control over the form layout |
 | `OrganizationUnitSwitcher(modifier, scope, limit, switchOptions, onSelect, onSwitched, onSignInRequired, content)` | Dropdown that lists the user's organization units and switches the session to the one picked |
 | `BaseOrganizationUnitSwitcher(organizationUnits, current, onSwitch, ..., content)` | Unstyled dropdown drawn from the data you pass, with no SDK state |
+| `PersonalAgentList(modifier, limit, onSelect, suspendable, content)` | Lists the personal agents the user owns, from `/users/me/agents` |
+| `PersonalAgentDetails(agentId, modifier, editable, deletable, suspendable, onDeleted, content)` | Shows one of the user's personal agents, and edits, deletes, and suspends it when allowed |
 
 #### Guards
 

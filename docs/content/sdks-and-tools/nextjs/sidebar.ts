@@ -59,6 +59,16 @@ const sidebar: SidebarsConfig = {
                       id: 'sdks-and-tools/nextjs/apis/components/organization-unit-switcher',
                       label: '<OrganizationUnitSwitcher />',
                     },
+                    {
+                      type: 'doc',
+                      id: 'sdks-and-tools/nextjs/apis/components/personal-agent-list',
+                      label: '<PersonalAgentList />',
+                    },
+                    {
+                      type: 'doc',
+                      id: 'sdks-and-tools/nextjs/apis/components/personal-agent-details',
+                      label: '<PersonalAgentDetails />',
+                    },
                   ],
                 },
               ],

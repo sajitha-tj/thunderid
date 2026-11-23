@@ -1,0 +1,52 @@
+---
+displayed_sidebar: null
+title: <PersonalAgentList />
+docType: reference
+description: Lists the personal agents the signed-in user owns, a page at a time, in Next.js apps, with the access token kept on the server.
+---
+
+# `<PersonalAgentList />`
+
+The `PersonalAgentList` component lists the personal agents the signed-in user owns, a page at a time, with each agent's name, client ID, and status. Selecting an agent reports it through `onSelect`, so your application decides what to open, for example [`<PersonalAgentDetails />`](../personal-agent-details) for that agent.
+
+The component reads the agents from `/users/me/agents?kind=personal-assistant` through a server action, so the access token stays on the server. The server action uses the session's access token, and `endpoints.usersMeAgents` when your configuration sets it. It renders `BasePersonalAgentList` from `@thunderid/react`, so its props, built-in UI, translation keys, and render props match the [React SDK's `<PersonalAgentList />`](../../../../react/apis/components/personal-agent-list).
+
+## Usage
+
+```jsx title="app/account/agents/page.tsx" showLineNumbers
+'use client'
+import { useRouter } from 'next/navigation'
+import { PersonalAgentList } from '@thunderid/nextjs'
+
+export default function AgentsPage() {
+  const router = useRouter()
+
+  return <PersonalAgentList suspendable onSelect={(agent) => router.push(`/account/agents/${agent.id}`)} />
+}
+```
+
+:::note
+The server lists the agents in the organization unit the access token names, so the application must issue the `ouId` attribute in its access token. Without it, the list is empty.
+:::
+
+## Props
+
+| Prop | Type | Required | Default | Description |
+| :--- | :--- | :---: | :--- | :--- |
+| `suspendable` | `boolean` | ❌ | `false` | Lets the user suspend all their personal agents at once. The component asks the user to confirm first, then shows how many agents it suspended. |
+| `limit` | `number` | ❌ | `20` | Page size. |
+| `onSelect` | `(agent: BasicAgent) => void` | ❌ | | Called when an agent is chosen. Rows are selectable only when set. |
+| `selectedAgentId` | `string` | ❌ | | Identifier of the agent to highlight. |
+| `title` | `string` | ❌ | | Heading of the list. Pass an empty string to hide it. |
+| `description` | `string` | ❌ | | Text under the heading. |
+| `actions` | `ReactNode` | ❌ | | Controls rendered next to the title. |
+| `className` | `string` | ❌ | | Additional CSS class names. |
+| `preferences` | `Preferences` | ❌ | | Component-level preference overrides, including i18n. |
+| `children` | `(props: BasePersonalAgentListRenderProps) => ReactNode` | ❌ | | Render function that replaces the built-in table. See the [React `BasePersonalAgentList`](../../../../react/apis/components/personal-agent-list#basepersonalagentlist). |
+
+Suspending them all places the user's own suspension on every personal agent the user has not already suspended. It does not lift or change a suspension the organization placed.
+
+## Related
+
+- [`<PersonalAgentDetails />`](../personal-agent-details) shows the agent the user chooses.
+- [Personal Agents](../../../../javascript/apis/user/personal-agents) documents the `/users/me/agents` operations.

@@ -122,6 +122,7 @@ By default the SDK fetches `{baseUrl}/.well-known/openid-configuration` to resol
 | `endpoints.flowMeta` | `string` | `{baseUrl}/flow/meta` | Override the flow metadata endpoint |
 | `endpoints.usersMe` | `string` | `{baseUrl}/users/me` | Override the current-user profile endpoint |
 | `endpoints.usersMeOrganizationUnits` | `string` | `{baseUrl}/users/me/ous` | Override the endpoint that lists the organization units the signed-in user can access |
+| `endpoints.usersMeAgents` | `string` | `{baseUrl}/users/me/agents` | Override the collection of the signed-in user's own agents, used by the [personal agent](../user/personal-agents) operations |
 | `endpoints.applications` | `string` | `{baseUrl}/applications` | Override the applications collection used by the [management](../management) operations |
 | `endpoints.users` | `string` | `{baseUrl}/users` | Override the users collection used by the [management](../management) operations |
 | `endpoints.agents` | `string` | `{baseUrl}/agents` | Override the agents collection used by the [management](../management) operations |
@@ -130,7 +131,7 @@ By default the SDK fetches `{baseUrl}/.well-known/openid-configuration` to resol
 The `endpoints.authorization`, `endpoints.token`, `endpoints.userInfo`, `endpoints.jwks`, `endpoints.introspection`,
 and `endpoints.endSession` overrides address OIDC/OAuth endpoints, which are otherwise resolved from the discovery
 document. The `endpoints.flowExecute`, `endpoints.flowMeta`, `endpoints.usersMe`, `endpoints.usersMeOrganizationUnits`,
-`endpoints.applications`, `endpoints.users`, `endpoints.agents`, and `endpoints.authorizationDetailTypes` overrides address
+`endpoints.usersMeAgents`, `endpoints.applications`, `endpoints.users`, `endpoints.agents`, and `endpoints.authorizationDetailTypes` overrides address
 resource-server endpoints, which are otherwise derived by concatenating `baseUrl` with a fixed path.
 
 Split these two groups when the OAuth authorization server and the <ProductName /> resource server are different hosts,

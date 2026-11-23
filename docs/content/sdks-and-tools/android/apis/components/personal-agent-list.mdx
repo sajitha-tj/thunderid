@@ -1,0 +1,90 @@
+---
+displayed_sidebar: null
+title: PersonalAgentList
+docType: reference
+description: Jetpack Compose list of the personal agents the signed-in user owns, a page at a time, which can let the user suspend them all.
+---
+
+# `PersonalAgentList`
+
+The `PersonalAgentList` composable lists the personal agents the signed-in user owns, a page at a time, with each agent's name, client ID, and status. Choosing an agent calls `onSelect`, so your app decides what to open, for example [`PersonalAgentDetails`](../personal-agent-details) for that agent.
+
+The composable reads the agents through [`ThunderIDClient.getMeAgents`](../../thunderid-client#personal-agents), from `GET /users/me/agents?kind=personal-assistant`. These are the signed-in user's own requests: they carry the user's access token through the SDK's own transport, like the other `/users/me` requests, and `http.fetcher` never applies to them.
+
+`PersonalAgentList` requires `ThunderIDProvider` in its ancestor composable hierarchy. The server lists the agents in the organization unit the access token names, so the application must issue the `ouId` attribute in its access token. Without it, the list is empty.
+
+## Usage
+
+```kotlin
+import dev.thunderid.compose.components.account.PersonalAgentDetails
+import dev.thunderid.compose.components.account.PersonalAgentList
+
+@Composable
+fun MyAgents() {
+    var agentId by remember { mutableStateOf<String?>(null) }
+
+    Column {
+        PersonalAgentList(
+            selectedAgentId = agentId,
+            onSelect = { agentId = it.id },
+            suspendable = true
+        )
+        agentId?.let { id ->
+            PersonalAgentDetails(
+                agentId = id,
+                editable = true,
+                deletable = true,
+                suspendable = true,
+                onDeleted = { agentId = null }
+            )
+        }
+    }
+}
+```
+
+## Parameters
+
+| Parameter | Type | Required | Default | Description |
+| :--- | :--- | :---: | :--- | :--- |
+| `modifier` | `Modifier` | ❌ | `Modifier` | Compose modifier applied to the list. |
+| `limit` | `Int` | ❌ | `20` | Page size. |
+| `onSelect` | `((BasicAgent) -> Unit)?` | ❌ | | Called when an agent is chosen. Rows are selectable only when set. |
+| `selectedAgentId` | `String?` | ❌ | | Identifier of the agent to highlight. |
+| `title` | `String?` | ❌ | | Heading of the list. |
+| `description` | `String?` | ❌ | | Text under the heading. |
+| `suspendable` | `Boolean` | ❌ | `false` | Lets the user suspend all their personal agents at once. The composable asks the user to confirm first, then shows how many agents it suspended. |
+| `actions` | `(@Composable RowScope.() -> Unit)?` | ❌ | | Controls rendered next to the title. |
+| `content` | `(@Composable (PersonalAgentListState) -> Unit)?` | ❌ | | Renders custom UI in place of the default list. |
+
+Suspending them all places the user's own suspension on every personal agent the user has not already suspended. It does not lift or change a suspension the organization placed.
+
+## `BasePersonalAgentList`
+
+`BasePersonalAgentList` is the presentational list. It holds no data of its own: pass the page of agents and handle selection, pagination, and suspending them all. Pair it with `rememberGetMeAgents` and `rememberSuspendAllMeAgents`, or any other source.
+
+| Parameter | Type | Required | Default | Description |
+| :--- | :--- | :---: | :--- | :--- |
+| `agents` | `List<BasicAgent>` | ✅ | | The page of agents to show. |
+| `modifier` | `Modifier` | ❌ | `Modifier` | Compose modifier applied to the list. |
+| `totalResults` | `Int?` | ❌ | `agents.size` | Total number of agents, used for pagination. |
+| `isLoading` | `Boolean` | ❌ | `false` | Shows a loading state. |
+| `error` | `String?` | ❌ | `null` | A translated message to show in place of the rows. |
+| `limit` | `Int` | ❌ | `20` | Page size. |
+| `offset` | `Int` | ❌ | `0` | Offset of the current page. |
+| `onPageChange` | `((Int) -> Unit)?` | ❌ | | Called with the offset of the page to show. Pagination is hidden when omitted. |
+| `onSelect` | `((BasicAgent) -> Unit)?` | ❌ | | Called when an agent is chosen. Rows are selectable only when set. |
+| `selectedAgentId` | `String?` | ❌ | | Identifier of the agent to highlight. |
+| `title` | `String?` | ❌ | | Heading of the list. |
+| `description` | `String?` | ❌ | | Text under the heading. |
+| `actionError` | `String?` | ❌ | `null` | A translated message about the last suspend-all request. |
+| `isSuspendingAll` | `Boolean` | ❌ | `false` | Shows the suspend-all action as in progress. |
+| `onSuspendAll` | `(() -> Unit)?` | ❌ | | Suspends every personal agent of the signed-in user. The action is hidden when omitted, and when there are no agents. |
+| `suspendedCount` | `Int?` | ❌ | `null` | How many agents the last suspend-all request suspended, shown as a notice. |
+| `actions` | `(@Composable RowScope.() -> Unit)?` | ❌ | | Controls rendered next to the title. |
+| `content` | `(@Composable (PersonalAgentListState) -> Unit)?` | ❌ | | Renders custom UI in place of the default list. |
+
+The `content` lambda receives a `PersonalAgentListState` with the `agents`, the `isLoading` and `error` state, `limit`, `offset`, `totalResults`, `selectedId`, `onPageChange`, `onSelect`, `actionError`, `isSuspendingAll`, `onSuspendAll`, and `suspendedCount`. `onSuspendAll` is `null` when suspending them all is not allowed or there are no agents. The built-in list asks the user to confirm before it calls `onSuspendAll`, so a custom `content` must ask too.
+
+## Internationalization
+
+The title, empty message, suspend-all labels, and messages come from the `user.agents` keys in the SDK's translations, available in all nine locales.

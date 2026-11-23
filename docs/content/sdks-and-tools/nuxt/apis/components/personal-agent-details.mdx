@@ -1,0 +1,58 @@
+---
+displayed_sidebar: null
+title: <PersonalAgentDetails />
+docType: reference
+description: Shows one of the signed-in user's personal agents and lets the user edit, delete, and suspend it, in Nuxt apps, with the access token kept on the server.
+---
+
+# `<PersonalAgentDetails />`
+
+The `PersonalAgentDetails` component shows one of the signed-in user's personal agents: its name, description, client ID, status, attributes, grant types, and redirect URIs. When your application turns them on, the user can also edit the agent, delete it, and place or lift their own suspension of it. Each action is off by default.
+
+The component reads and changes the agent through `/api/auth/user/agents/{id}`, routes of the Nuxt module that call `/users/me/agents` with the server-held session, so the access token never reaches the browser. See [Server Routes](../personal-agent-list#server-routes). It renders `BasePersonalAgentDetails` from `@thunderid/vue`, with the same props, events, and slots as the [Vue SDK's `<PersonalAgentDetails />`](../../../../vue/apis/components/personal-agent-details).
+
+## Usage
+
+```vue title="pages/account/agents/[agentId].vue" showLineNumbers
+<script setup>
+const route = useRoute()
+</script>
+
+<template>
+  <PersonalAgentDetails
+    :agent-id="route.params.agentId"
+    editable
+    deletable
+    suspendable
+    @deleted="navigateTo('/account/agents')"
+  />
+</template>
+```
+
+:::note
+An agent the user does not own, or one outside the organization unit the access token names, is not found.
+:::
+
+## Props
+
+| Prop | Type | Required | Default | Description |
+| :--- | :--- | :---: | :--- | :--- |
+| `agentId` | `string` | ✅ | | Identifier of the agent to show. |
+| `editable` | `boolean` | ❌ | `false` | Lets the user edit the agent's name, description, attributes, grant types, and redirect URIs. |
+| `deletable` | `boolean` | ❌ | `false` | Lets the user delete the agent. The component asks the user to confirm first. |
+| `suspendable` | `boolean` | ❌ | `false` | Lets the user place or lift their own suspension of the agent. Suspending asks the user to confirm first. |
+| `className` | `string` | ❌ | | Additional CSS class names. |
+| `preferences` | `Preferences` | ❌ | | Component-level preference overrides, including i18n. |
+
+## Events
+
+| Event | Payload | Description |
+| :--- | :--- | :--- |
+| `deleted` | None | The agent was deleted. Use it to navigate away, since the agent no longer exists. |
+
+The editing, suspension, and confirmation behavior, the slots, and the slot props are the same as in the Vue SDK. See [Behavior](../../../../vue/apis/components/personal-agent-details#behavior).
+
+## Related
+
+- [`<PersonalAgentList />`](../personal-agent-list) lists the agents the user can open.
+- [Personal Agents](../../../../javascript/apis/user/personal-agents) documents the `/users/me/agents` operations.

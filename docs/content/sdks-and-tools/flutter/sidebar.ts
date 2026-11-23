@@ -77,6 +77,16 @@ const sidebar: SidebarsConfig = {
             },
             {
               type: 'doc',
+              id: 'sdks-and-tools/flutter/apis/components/personal-agent-list',
+              label: 'PersonalAgentList',
+            },
+            {
+              type: 'doc',
+              id: 'sdks-and-tools/flutter/apis/components/personal-agent-details',
+              label: 'PersonalAgentDetails',
+            },
+            {
+              type: 'doc',
               id: 'sdks-and-tools/flutter/apis/components/flow-variables-form',
               label: 'FlowVariablesForm',
             },

@@ -1,0 +1,60 @@
+---
+displayed_sidebar: null
+title: <PersonalAgentList />
+docType: reference
+description: Lists the personal agents the signed-in user owns, a page at a time, in Nuxt apps, through module routes that keep the access token on the server.
+---
+
+# `<PersonalAgentList />`
+
+The `PersonalAgentList` component lists the personal agents the signed-in user owns, a page at a time, with each agent's name, client ID, and status. Selecting an agent emits `select`, so your application decides what to open, for example [`<PersonalAgentDetails />`](../personal-agent-details) for that agent.
+
+The component reads the agents from `GET /api/auth/user/agents`, a route of the Nuxt module that calls `/users/me/agents?kind=personal-assistant` with the server-held session, so the access token never reaches the browser. It renders `BasePersonalAgentList` from `@thunderid/vue`, with the same props, events, and slots as the [Vue SDK's `<PersonalAgentList />`](../../../../vue/apis/components/personal-agent-list).
+
+## Usage
+
+```vue title="pages/account/agents/index.vue" showLineNumbers
+<template>
+  <PersonalAgentList suspendable @select="(agent) => navigateTo(`/account/agents/${agent.id}`)" />
+</template>
+```
+
+:::note
+The server lists the agents in the organization unit the access token names, so the application must issue the `ouId` attribute in its access token. Without it, the list is empty.
+:::
+
+## Props
+
+| Prop | Type | Required | Default | Description |
+| :--- | :--- | :---: | :--- | :--- |
+| `suspendable` | `boolean` | ❌ | `false` | Lets the user suspend all their personal agents at once. The component asks the user to confirm first, then shows how many agents it suspended. |
+| `limit` | `number` | ❌ | `20` | Page size. |
+| `selectedAgentId` | `string` | ❌ | | Identifier of the agent to highlight. |
+| `onSelect` | `(agent: BasicAgent) => void` | ❌ | | Called when an agent is chosen. Rows are selectable only when set, or when `@select` is bound. |
+| `title` | `string` | ❌ | | Heading of the list. Pass an empty string to hide it. |
+| `description` | `string` | ❌ | | Text under the heading. |
+| `className` | `string` | ❌ | | Additional CSS class names. |
+| `preferences` | `Preferences` | ❌ | | Component-level preference overrides, including i18n. |
+
+Suspending them all places the user's own suspension on every personal agent the user has not already suspended. It does not lift or change a suspension the organization placed. For the events, slots, and slot props, see the [Vue SDK's `<PersonalAgentList />`](../../../../vue/apis/components/personal-agent-list#events).
+
+## Server Routes
+
+The Nuxt module registers these routes for the personal agent components. Each runs the request with the server-held session and answers `401` when the session is missing or expired. A refusal from the server keeps its status, without the server's message.
+
+| Route | Calls |
+| :--- | :--- |
+| `GET /api/auth/user/agents` | `GET /users/me/agents?kind=personal-assistant`, with `limit` and `offset` |
+| `POST /api/auth/user/agents/suspend` | `POST /users/me/agents/suspend` |
+| `GET /api/auth/user/agents/{id}` | `GET /users/me/agents/{id}?include=display` |
+| `PUT /api/auth/user/agents/{id}` | `PUT /users/me/agents/{id}` |
+| `DELETE /api/auth/user/agents/{id}` | `DELETE /users/me/agents/{id}` |
+| `POST /api/auth/user/agents/{id}/suspend` | `POST /users/me/agents/{id}/suspend` |
+| `POST /api/auth/user/agents/{id}/unsuspend` | `POST /users/me/agents/{id}/unsuspend` |
+
+A blank agent identifier is refused with `400` before any request reaches the server.
+
+## Related
+
+- [`<PersonalAgentDetails />`](../personal-agent-details) shows the agent the user chooses.
+- [Personal Agents](../../../../javascript/apis/user/personal-agents) documents the `/users/me/agents` operations.

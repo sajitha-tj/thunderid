@@ -125,6 +125,8 @@ struct ContentView: View {
 | `BaseUserProfile<Content>(...)` | Builder variant with full control over the form layout |
 | `OrganizationUnitSwitcher(scope:limit:switchOptions:onSelect:onSwitched:onSignInRequired:)` | Shows the current organization unit and a menu that switches the session to another |
 | `BaseOrganizationUnitSwitcher<Content>(...)` | The same field and menu, drawn from units and callbacks you pass in |
+| `PersonalAgentList(limit:onSelect:suspendable:)` | Lists the personal agents the user owns, from `/users/me/agents` |
+| `PersonalAgentDetails(agentId:editable:deletable:suspendable:onDeleted:)` | Shows one of the user's personal agents, and edits, deletes, and suspends it when allowed |
 
 #### Guards
 

@@ -1,0 +1,81 @@
+---
+displayed_sidebar: null
+title: PersonalAgentDetails
+docType: reference
+description: Jetpack Compose view of one of the signed-in user's personal agents, which can let the user edit, delete, and suspend it.
+---
+
+# `PersonalAgentDetails`
+
+The `PersonalAgentDetails` composable shows one of the signed-in user's personal agents: its name, description, client ID, status, attributes, grant types, and redirect URIs. When your app turns them on, the user can also edit the agent, delete it, and place or lift their own suspension of it. Each action is off by default.
+
+The composable reads and changes the agent through the [personal agent methods of `ThunderIDClient`](../../thunderid-client#personal-agents). These are the signed-in user's own requests: they carry the user's access token through the SDK's own transport, and `http.fetcher` never applies to them.
+
+`PersonalAgentDetails` requires `ThunderIDProvider` in its ancestor composable hierarchy. An agent the user does not own, or one outside the organization unit the access token names, is not found.
+
+## Usage
+
+```kotlin
+import dev.thunderid.compose.components.account.PersonalAgentDetails
+
+@Composable
+fun AgentScreen(agentId: String, onBack: () -> Unit) {
+    PersonalAgentDetails(
+        agentId = agentId,
+        editable = true,
+        deletable = true,
+        suspendable = true,
+        onDeleted = onBack
+    )
+}
+```
+
+To list the agents the user can open, use [`PersonalAgentList`](../personal-agent-list).
+
+## Parameters
+
+| Parameter | Type | Required | Default | Description |
+| :--- | :--- | :---: | :--- | :--- |
+| `agentId` | `String` | ✅ | | Identifier of the agent to show. |
+| `modifier` | `Modifier` | ❌ | `Modifier` | Compose modifier applied to the view. |
+| `editable` | `Boolean` | ❌ | `false` | Lets the user edit the agent's name, description, attributes, grant types, and redirect URIs. |
+| `deletable` | `Boolean` | ❌ | `false` | Lets the user delete the agent. The composable asks the user to confirm first. |
+| `suspendable` | `Boolean` | ❌ | `false` | Lets the user place or lift their own suspension of the agent. Suspending asks the user to confirm first. |
+| `onDeleted` | `(() -> Unit)?` | ❌ | | Called after the agent is deleted. Use it to navigate away, since the agent no longer exists. |
+| `actions` | `(@Composable RowScope.() -> Unit)?` | ❌ | | Controls rendered next to the agent's name. |
+| `content` | `(@Composable (PersonalAgentDetailsState) -> Unit)?` | ❌ | | Renders custom UI in place of the default view. |
+
+## Behavior
+
+- **Editing.** The edit form offers the authorization code, CIBA, and refresh token grants. It requires a name, and a redirect URI while the authorization code grant is selected. The redirect URI field takes URIs separated by whitespace, one per line by default. The form keeps the attributes it does not edit and sends them back unchanged, because an update replaces them all. It stays open with the changes until the save succeeds.
+- **Read-only agents.** A declarative agent offers no edit or delete.
+- **Suspension.** The user's suspension is independent of the organization's. The composable offers **Unsuspend** only while the user holds the agent suspended, and **Suspend** otherwise. Lifting the user's suspension leaves any other suspension in force. When the server names who holds the agent suspended, the composable shows it.
+- **Confirmation.** Deleting and suspending ask the user to confirm first. A pending confirmation belongs to the agent it was opened for, and closes when `agentId` changes.
+
+## `BasePersonalAgentDetails`
+
+`BasePersonalAgentDetails` is the presentational view. It holds no data of its own: pass the agent and handle editing, deletion, and the user's suspension. Each action is offered only when its handler is set and it applies to the agent. Pair it with `rememberGetMeAgent`, `rememberUpdateMeAgent`, `rememberDeleteMeAgent`, and `rememberMeAgentSuspension`, or any other source.
+
+| Parameter | Type | Required | Default | Description |
+| :--- | :--- | :---: | :--- | :--- |
+| `agent` | `Agent?` | ✅ | | The agent to show. |
+| `modifier` | `Modifier` | ❌ | `Modifier` | Compose modifier applied to the view. |
+| `isLoading` | `Boolean` | ❌ | `false` | Shows a loading state. |
+| `error` | `String?` | ❌ | `null` | A translated message to show. |
+| `isUpdating` | `Boolean` | ❌ | `false` | Shows the save as in progress. |
+| `isDeleting` | `Boolean` | ❌ | `false` | Shows the delete as in progress. |
+| `isChangingSuspension` | `Boolean` | ❌ | `false` | Shows the suspension change as in progress. |
+| `onUpdate` | `(suspend (UpdateMeAgentRequest) -> Boolean)?` | ❌ | | Saves the edited agent and returns whether it was saved. The edit form stays open with the changes until it returns `true`. Hidden for a declarative agent. |
+| `onDelete` | `(() -> Unit)?` | ❌ | | Deletes the agent. Hidden when omitted, and for a declarative agent. |
+| `onSuspend` | `(() -> Unit)?` | ❌ | | Places the user's suspension on the agent. Hidden when omitted, and while the user holds the agent suspended. |
+| `onUnsuspend` | `(() -> Unit)?` | ❌ | | Lifts the user's suspension of the agent. Shown only while the user holds the agent suspended. |
+| `actions` | `(@Composable RowScope.() -> Unit)?` | ❌ | | Controls rendered next to the agent's name. |
+| `content` | `(@Composable (PersonalAgentDetailsState) -> Unit)?` | ❌ | | Renders custom UI in place of the default view. |
+
+The `content` lambda receives a `PersonalAgentDetailsState` with the `agent`, its `oauth` settings, the `isLoading`, `isUpdating`, `isDeleting`, `isChangingSuspension`, and `error` state, and `onUpdate`, `onDelete`, `onSuspend`, and `onUnsuspend`. An action is `null` when the app has not turned it on or it does not apply to the agent. The built-in view asks the user to confirm before it deletes or suspends, so a custom `content` must ask too.
+
+To build your own edit form, `PersonalAgentFormValues.from(agent)` starts the values from the agent as read, `isValid` checks them, and `updateRequest(agent)` builds the `UpdateMeAgentRequest`, sending back the attributes the form does not edit. `PersonalAgentGrantTypes.ALL` lists the grant types a personal agent can use.
+
+## Internationalization
+
+The labels, actions, confirmations, and messages come from the `user.agents` keys in the SDK's translations, available in all nine locales.

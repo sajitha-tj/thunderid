@@ -1,0 +1,99 @@
+---
+displayed_sidebar: null
+title: <PersonalAgentList />
+docType: reference
+description: Lists the personal agents the signed-in user owns, a page at a time, and lets the user suspend them all when your Vue application allows it.
+---
+
+# `<PersonalAgentList />`
+
+The `PersonalAgentList` component lists the personal agents the signed-in user owns, a page at a time, with each agent's name, client ID, and status. Selecting an agent emits `select`, so your application decides what to open, for example [`<PersonalAgentDetails />`](../personal-agent-details) for that agent.
+
+The component reads the agents from `GET /users/me/agents?kind=personal-assistant`, or from `endpoints.usersMeAgents` on `<ThunderIDProvider />` when set. These are the signed-in user's own requests: they carry the user's access token through the SDK's own transport, like the other `/users/me` requests, and `http.fetcher` never applies to them.
+
+## Usage
+
+```vue title="src/MyAgents.vue" showLineNumbers
+<script setup>
+import { ref } from 'vue'
+import { PersonalAgentList, PersonalAgentDetails } from '@thunderid/vue'
+
+const agentId = ref(null)
+</script>
+
+<template>
+  <PersonalAgentList suspendable :selected-agent-id="agentId" @select="(agent) => (agentId = agent.id)" />
+  <PersonalAgentDetails
+    v-if="agentId"
+    :agent-id="agentId"
+    editable
+    deletable
+    suspendable
+    @deleted="agentId = null"
+  />
+</template>
+```
+
+:::note
+The component must be rendered within `ThunderIDProvider`. The server lists the agents in the organization unit the access token names, so the application must issue the `ouId` attribute in its access token. Without it, the list is empty.
+:::
+
+## Props
+
+| Prop | Type | Required | Default | Description |
+| :--- | :--- | :---: | :--- | :--- |
+| `suspendable` | `boolean` | No | `false` | Lets the user suspend all their personal agents at once. The component asks the user to confirm first, then shows how many agents it suspended. |
+| `limit` | `number` | No | `20` | Page size. |
+| `selectedAgentId` | `string` | No | | Identifier of the agent to highlight. |
+| `onSelect` | `(agent: BasicAgent) => void` | No | | Called when an agent is chosen. Rows are selectable only when set, or when `@select` is bound. |
+| `title` | `string` | No | | Heading of the list. Pass an empty string to hide it. |
+| `description` | `string` | No | | Text under the heading. |
+| `className` | `string` | No | | CSS class for the root element. |
+| `preferences` | `Preferences` | No | | Internationalization preferences. |
+
+Suspending them all places the user's own suspension on every personal agent the user has not already suspended. It does not lift or change a suspension the organization placed.
+
+## Events
+
+| Event | Payload | Description |
+| :--- | :--- | :--- |
+| `select` | `BasicAgent` | An agent was chosen. |
+
+## Slots
+
+| Slot | Description |
+| :--- | :--- |
+| `actions` | Controls rendered next to the title. |
+| `default` | A scoped slot that replaces the default table. It receives the [slot props](#slot-props). |
+
+## Slot Props
+
+The default slot receives the `agents` (also available as `rows`), the default `columns`, the `isLoading` and `error` state, `limit`, `offset`, `totalResults`, `onPageChange`, `onSelect`, `selectedRowId`, `actionError`, `isSuspendingAll`, `suspendedCount`, and `onSuspendAll`. `onSuspendAll` is undefined when suspending them all is not allowed or there are no agents. The built-in table asks the user to confirm before it calls `onSuspendAll`, so a custom slot must ask too.
+
+## `<BasePersonalAgentList />`
+
+`BasePersonalAgentList` is the presentational table. It holds no data of its own: pass the page of agents and handle selection, pagination, and suspending them all. It takes the same slots.
+
+| Prop | Type | Required | Default | Description |
+| :--- | :--- | :---: | :--- | :--- |
+| `agents` | `BasicAgent[]` | Yes | | The page of agents to show. |
+| `totalResults` | `number` | No | `agents.length` | Total number of agents, used for pagination. |
+| `limit` | `number` | No | `20` | Page size. |
+| `offset` | `number` | No | `0` | Offset of the current page. |
+| `onPageChange` | `(offset: number) => void` | No | | Called with the offset of the page to show, also available as `@page-change`. Pagination is hidden when neither is set. |
+| `onSelect` | `(agent: BasicAgent) => void` | No | | Called when an agent is chosen, also available as `@select`. |
+| `selectedAgentId` | `string` | No | | Identifier of the agent to highlight. |
+| `onSuspendAll` | `() => void` | No | | Suspends every personal agent of the signed-in user, also available as `@suspend-all`. The action is hidden when neither is set, and when there are no agents. |
+| `isSuspendingAll` | `boolean` | No | `false` | Shows the suspend-all action as in progress. |
+| `suspendedCount` | `number \| null` | No | `null` | How many agents the last suspend-all request suspended, shown as a notice. |
+| `actionError` | `string \| null` | No | `null` | A translated message about the last suspend-all request. |
+| `isLoading` | `boolean` | No | `false` | Shows a loading state. |
+| `error` | `string \| null` | No | `null` | An error message to show in place of the rows. |
+| `title` | `string` | No | | Heading of the list. Pass an empty string to hide it. |
+| `description` | `string` | No | | Text under the heading. |
+| `className` | `string` | No | | CSS class for the root element. |
+| `preferences` | `Preferences` | No | | Internationalization preferences. |
+
+## Internationalization
+
+The title, column headings, empty message, suspend-all labels, and messages come from the `user.agents` keys in the SDK's translations, available in all nine locales. Override them through `preferences.i18n`. See [Internationalization](../../../../javascript/apis/i18n).

@@ -1,0 +1,100 @@
+---
+displayed_sidebar: null
+title: <PersonalAgentDetails />
+docType: reference
+description: Shows one of the signed-in user's personal agents and lets the user edit, delete, and suspend it when your Vue application allows it.
+---
+
+# `<PersonalAgentDetails />`
+
+The `PersonalAgentDetails` component shows one of the signed-in user's personal agents: its name, description, client ID, status, attributes, grant types, and redirect URIs. When your application turns them on, the user can also edit the agent, delete it, and place or lift their own suspension of it. Each action is off by default.
+
+The component reads the agent from `GET /users/me/agents/{id}` and changes it through the other `/users/me/agents` operations, or through `endpoints.usersMeAgents` on `<ThunderIDProvider />` when set. These are the signed-in user's own requests: they carry the user's access token through the SDK's own transport, and `http.fetcher` never applies to them.
+
+## Usage
+
+```vue title="src/AgentPage.vue" showLineNumbers
+<script setup>
+import { useRoute, useRouter } from 'vue-router'
+import { PersonalAgentDetails } from '@thunderid/vue'
+
+const route = useRoute()
+const router = useRouter()
+</script>
+
+<template>
+  <PersonalAgentDetails
+    :agent-id="route.params.agentId"
+    editable
+    deletable
+    suspendable
+    @deleted="router.push('/agents')"
+  />
+</template>
+```
+
+To list the agents the user can open, use [`<PersonalAgentList />`](../personal-agent-list).
+
+:::note
+The component must be rendered within `ThunderIDProvider`. An agent the user does not own, or one outside the organization unit the access token names, is not found.
+:::
+
+## Props
+
+| Prop | Type | Required | Default | Description |
+| :--- | :--- | :---: | :--- | :--- |
+| `agentId` | `string` | Yes | | Identifier of the agent to show. |
+| `editable` | `boolean` | No | `false` | Lets the user edit the agent's name, description, attributes, grant types, and redirect URIs. |
+| `deletable` | `boolean` | No | `false` | Lets the user delete the agent. The component asks the user to confirm first. |
+| `suspendable` | `boolean` | No | `false` | Lets the user place or lift their own suspension of the agent. Suspending asks the user to confirm first. |
+| `className` | `string` | No | | CSS class for the root element. |
+| `preferences` | `Preferences` | No | | Internationalization preferences. |
+
+## Events
+
+| Event | Payload | Description |
+| :--- | :--- | :--- |
+| `deleted` | None | The agent was deleted. Use it to navigate away, since the agent no longer exists. |
+
+## Slots
+
+| Slot | Description |
+| :--- | :--- |
+| `actions` | Controls rendered next to the agent's name. |
+| `default` | A scoped slot that replaces the default view. It receives the [slot props](#slot-props). |
+
+## Behavior
+
+- **Editing.** The edit form offers the authorization code, CIBA, and refresh token grants. It requires a name, and a redirect URI while the authorization code grant is selected. The redirect URI field takes URIs separated by whitespace. The form keeps the attributes it does not edit and sends them back unchanged, because an update replaces them all. It stays open with the changes until the save succeeds.
+- **Read-only agents.** A declarative agent offers no edit or delete.
+- **Suspension.** The user's suspension is independent of the organization's. The component offers **Unsuspend** only while the user holds the agent suspended, and **Suspend** otherwise. Lifting the user's suspension leaves any other suspension in force. When the server names who holds the agent suspended, the component shows it.
+- **Confirmation.** Deleting and suspending ask the user to confirm inline first.
+
+## Slot Props
+
+The default slot receives the `agent`, its `oauth` configuration, the `isLoading`, `isUpdating`, `isDeleting`, `isChangingSuspension`, and `error` state, and `onUpdate`, `onDelete`, `onSuspend`, and `onUnsuspend`. An action is undefined when the application has not turned it on or it does not apply to the agent. `onUpdate` returns a promise that resolves to `false` when the update fails. The built-in view asks the user to confirm before it deletes or suspends, so a custom slot must ask too.
+
+To build your own edit form, `toPersonalAgentFormValues`, `isPersonalAgentFormValid`, and `toUpdateMeAgentRequest` from `@thunderid/vue` turn an agent into form values, check them, and build the update request. See [Personal Agents](../../../../javascript/apis/user/personal-agents#form-helpers).
+
+## `<BasePersonalAgentDetails />`
+
+`BasePersonalAgentDetails` is the presentational view. It holds no data of its own: pass the agent and handle editing, deletion, and the user's suspension. Each action is offered only when its handler is set and it applies to the agent. It takes the same slots.
+
+| Prop | Type | Required | Default | Description |
+| :--- | :--- | :---: | :--- | :--- |
+| `agent` | `Agent` | No | | The agent to show. |
+| `onUpdate` | `(changes: UpdateMeAgentRequest) => void \| Promise<boolean>` | No | | Replaces the editable part of the agent, also available as `@update`. Hidden when neither is set, and for a declarative agent. When it returns a promise, the form stays open until the promise settles, and stays open with the changes if it resolves to `false` or rejects. |
+| `onDelete` | `() => void` | No | | Deletes the agent, also available as `@delete`. Hidden when neither is set, and for a declarative agent. |
+| `onSuspend` | `() => void` | No | | Places the user's suspension on the agent, also available as `@suspend`. Hidden when neither is set, and while the user holds the agent suspended. |
+| `onUnsuspend` | `() => void` | No | | Lifts the user's suspension of the agent, also available as `@unsuspend`. Shown only while the user holds the agent suspended. |
+| `isLoading` | `boolean` | No | `false` | Shows a loading state. |
+| `isUpdating` | `boolean` | No | `false` | Shows the save as in progress. |
+| `isDeleting` | `boolean` | No | `false` | Shows the delete as in progress. |
+| `isChangingSuspension` | `boolean` | No | `false` | Shows the suspension change as in progress. |
+| `error` | `string \| null` | No | `null` | An error message to show. |
+| `className` | `string` | No | | CSS class for the root element. |
+| `preferences` | `Preferences` | No | | Internationalization preferences. |
+
+## Internationalization
+
+The labels, actions, confirmations, and messages come from the `user.agents` keys in the SDK's translations, available in all nine locales. Override them through `preferences.i18n`. See [Internationalization](../../../../javascript/apis/i18n).

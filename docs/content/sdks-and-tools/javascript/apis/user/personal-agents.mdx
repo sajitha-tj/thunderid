@@ -1,0 +1,105 @@
+---
+title: Personal Agents
+docType: reference
+displayed_sidebar: javascriptSdkSidebar
+description: Functions and helpers that let a signed-in user list, edit, delete, and suspend the personal agents they own, through the /users/me/agents API.
+---
+
+# Personal Agents
+
+These functions let the signed-in user manage the agents they own, such as an assistant that acts on their behalf, through the <ProductName /> `/users/me/agents` API. The server lists the agents in the organization unit the access token names, so the application must issue the `ouId` attribute in its access token.
+
+These are the signed-in user's own requests. The access token must be the user's own: the server refuses a delegated token, such as an agent's token for its owner. The functions attach no token themselves, so pass a `fetcher` that adds the user's `Authorization` header, as for the [management functions](../../management):
+
+```ts
+import { getMeAgents, suspendMeAgent, PERSONAL_AGENT_KIND } from '@thunderid/javascript'
+
+// `client` is your initialized ThunderIDJavaScriptClient.
+const authenticatedFetch = async (url: string, config: RequestInit): Promise<Response> =>
+  fetch(url, {
+    ...config,
+    headers: {...config.headers, Authorization: `Bearer ${await client.getAccessToken()}`},
+  })
+
+const {agents, totalResults} = await getMeAgents({
+  baseUrl: 'https://localhost:8090',
+  fetcher: authenticatedFetch,
+  kind: PERSONAL_AGENT_KIND,
+  limit: 10,
+})
+
+await suspendMeAgent({baseUrl: 'https://localhost:8090', fetcher: authenticatedFetch, agentId: agents[0].id})
+```
+
+In a React or Vue application, use [`<PersonalAgentList />`](../../../../react/apis/components/personal-agent-list) and [`<PersonalAgentDetails />`](../../../../react/apis/components/personal-agent-details), or call these functions from `@thunderid/react` or `@thunderid/vue`. There they take an `instanceId` and send the request through the SDK's own transport with the signed-in user's token, and `http.fetcher` never applies to them.
+
+## Request Configuration
+
+Every function accepts `baseUrl`, `url`, and `fetcher`, as described in the [management request configuration](../../management#request-configuration). The collection URL is `{baseUrl}/users/me/agents`, and `url` replaces it. A single agent is addressed as `{url}/{agentId}`, with the identifier percent-encoded.
+
+To keep the URL in configuration, set `endpoints.usersMeAgents` and read it with `resolveResourceEndpoint('usersMeAgents', config)`. See [Configuration](../../configuration#discovery-and-endpoint-parameters).
+
+## Functions
+
+| Function | Request | Returns |
+|----------|---------|---------|
+| `getMeAgents({kind, limit, offset})` | `GET /users/me/agents?kind=&limit=&offset=` | `AgentListResponse` |
+| `getMeAgent({agentId})` | `GET /users/me/agents/{agentId}?include=display` | `Agent` |
+| `updateMeAgent({agentId, payload})` | `PUT /users/me/agents/{agentId}` | `Agent` |
+| `deleteMeAgent({agentId})` | `DELETE /users/me/agents/{agentId}` | `void` |
+| `suspendMeAgent({agentId})` | `POST /users/me/agents/{agentId}/suspend` | `void` |
+| `unsuspendMeAgent({agentId})` | `POST /users/me/agents/{agentId}/unsuspend` | `void` |
+| `suspendAllMeAgents()` | `POST /users/me/agents/suspend` | `SuspendAllMeAgentsResponse` |
+
+- `getMeAgents` lists every agent the user owns. Pass `kind: PERSONAL_AGENT_KIND` (`'personal-assistant'`) to list only personal agents. A listed agent carries no `display` value, so `getAgentName` names it by its `name` attribute.
+- `getMeAgent` returns an agent the user owns in the organization unit the access token names. Any other agent is not found.
+- `updateMeAgent` replaces the part of the agent its owner may change. The `payload` is an `UpdateMeAgentRequest`, described below.
+- `suspendMeAgent` places the user's own suspension on the agent, after the server revokes the tokens issued to it. Suspending again changes nothing.
+- `unsuspendMeAgent` lifts the user's own suspension. A suspension another party placed, such as the organization's, stays in force.
+- `suspendAllMeAgents` places the user's own suspension on every personal agent the user has not already suspended. `SuspendAllMeAgentsResponse` holds `suspendedCount`, the number of agents it suspended.
+
+### `UpdateMeAgentRequest`
+
+An update replaces what it names, so send every field, empty lists included. Read the agent first and send back the attributes you do not change.
+
+| Field | Type | Required | Description |
+|-------|------|:--------:|-------------|
+| `attributes` | `Record<string, unknown>` | Yes | The agent's attributes, as its agent type defines them, including `name`. |
+| `grantTypes` | `string[]` | Yes | A subset of `PERSONAL_AGENT_GRANT_TYPES`: the authorization code, CIBA, and refresh token grants. An empty list removes every grant. |
+| `redirectUris` | `string[]` | Yes | At least one when `grantTypes` holds `authorization_code`. |
+| `description` | `string` | No | The agent's description. Left out, it is cleared. |
+
+## Suspension
+
+The user's suspension is independent of the organization's and of any other party's. Who holds an agent suspended is in `agent.status.details.appliedBy`, a list of `'owner'`, `'organization'`, and `'cascade'`.
+
+`getMeAgentSuspensionAction(status)` returns the action to offer the owner: `'unsuspend'` while the owner holds the agent suspended, and `'suspend'` otherwise. An agent the organization alone holds suspended can still take the owner's suspension.
+
+```ts
+import { getMeAgentSuspensionAction, suspendMeAgent, unsuspendMeAgent } from '@thunderid/javascript'
+
+const action = getMeAgentSuspensionAction(agent.status)
+await (action === 'suspend' ? suspendMeAgent : unsuspendMeAgent)({baseUrl, fetcher, agentId: agent.id})
+```
+
+## Form Helpers
+
+These helpers build an edit form for a personal agent the same way the SDK components do.
+
+| Helper | Description |
+|--------|-------------|
+| `toPersonalAgentFormValues(agent)` | Returns the `PersonalAgentFormValues` that start an edit from the agent as read: `name`, `description`, the text `attributes`, `grantTypes`, and `redirectUris` as the text of the field, the URIs separated by spaces. |
+| `isPersonalAgentFormValid(values)` | Whether the values can be saved. A name is required, and the authorization code grant needs a redirect URI. |
+| `toUpdateMeAgentRequest(agent, values)` | Builds the `UpdateMeAgentRequest`. The attributes the form does not edit are sent back unchanged, and the redirect URI text is split on whitespace. |
+| `getPersonalAgentOAuthConfig(agent)` | Returns the agent's OAuth configuration, or `undefined` when it has no OAuth client. |
+| `isPersonalAgent(agent)` | Whether the agent is a personal agent, that is, its `kind` is `'personal-assistant'`. |
+
+`PERSONAL_AGENT_GRANT_TYPES` lists the grant types a personal agent can use, and `PERSONAL_AGENT_GRANT_TYPE_LABEL_KEYS` maps each to the translation key that labels it.
+
+## Cache Keys
+
+`AgentQueryKeys.ME_AGENTS` (`'me-agents'`) and `AgentQueryKeys.ME_AGENT` (`'me-agent'`) name the user's own agents for caching, separately from the management keys `AGENTS` and `AGENT`. The React and Vue components use them to refetch after a change.
+
+## Error Handling
+
+Every function throws [`ThunderIDAPIError`](../../errors#thunderidapierror), with the codes listed in [management error handling](../../management#error-handling). A blank or whitespace-only `agentId` fails with `{function}-ValidationError-002` before any request is sent. HTTP 403 fails with `{function}-ForbiddenError-001`, and HTTP 404 with `{function}-NotFoundError-001`.

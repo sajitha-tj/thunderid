@@ -385,6 +385,40 @@ try {
 }
 ```
 
+## Personal Agents
+
+These methods let the signed-in user manage the agents they own, such as an assistant that acts on their behalf, through the `/users/me/agents` API. They are the user's own requests: they carry the user's access token through the SDK's own transport, like the other `/users/me` requests, and `http.fetcher` never applies to them. When sign-in runs on your backend (`endpoints.backend`), they go to `endpoints.backend.apiBaseUrl` like the other `/users/me` requests. The [`PersonalAgentList`](../components/personal-agent-list) and [`PersonalAgentDetails`](../components/personal-agent-details) composables call them for you.
+
+The server works on the agents in the organization unit the access token names, so the application must issue the `ouId` attribute in its access token. The token must be the user's own: the server refuses a delegated token, such as an agent's token for its owner.
+
+```kotlin
+suspend fun getMeAgents(kind: String? = null, limit: Int? = null, offset: Int? = null): AgentListResponse
+suspend fun getMeAgent(id: String): Agent
+suspend fun updateMeAgent(id: String, request: UpdateMeAgentRequest): Agent
+suspend fun deleteMeAgent(id: String)
+suspend fun suspendMeAgent(id: String)
+suspend fun unsuspendMeAgent(id: String)
+suspend fun suspendAllMeAgents(): SuspendAllMeAgentsResponse
+```
+
+| Method | Request | Description |
+| :--- | :--- | :--- |
+| `getMeAgents(kind, limit, offset)` | `GET /users/me/agents` | Lists the agents the user owns. Pass `AgentKind.PERSONAL` as `kind` to list only personal agents. |
+| `getMeAgent(id)` | `GET /users/me/agents/{id}?include=display` | Returns one of the user's agents. Any other agent is not found. |
+| `updateMeAgent(id, request)` | `PUT /users/me/agents/{id}` | Replaces the description, attributes, grant types, and redirect URIs, and returns the updated agent. |
+| `deleteMeAgent(id)` | `DELETE /users/me/agents/{id}` | Deletes the agent. |
+| `suspendMeAgent(id)` | `POST /users/me/agents/{id}/suspend` | Places the user's own suspension on the agent, after the server revokes the tokens issued to it. |
+| `unsuspendMeAgent(id)` | `POST /users/me/agents/{id}/unsuspend` | Lifts the user's own suspension. A suspension another party placed, such as the organization's, stays in force. |
+| `suspendAllMeAgents()` | `POST /users/me/agents/suspend` | Places the user's own suspension on every personal agent the user has not already suspended, and returns `suspendedCount`. |
+
+An update replaces what it names, so `UpdateMeAgentRequest` always carries the attributes, the grant types, and the redirect URIs, empty lists included. Start it from the agent as read: `PersonalAgentFormValues.from(agent)` holds the editable values, and `updateRequest(agent)` builds the request, sending back the attributes the form does not edit.
+
+The user's suspension is independent of the organization's. `agent.status?.suspendedBy` lists who holds an agent suspended, read from `status.details.appliedBy`. `MeAgentSuspensionAction.available(status)` returns `UNSUSPEND` while the user holds the agent suspended, and `SUSPEND` otherwise.
+
+A blank or whitespace-only `id` throws `INVALID_INPUT` before any request. HTTP 403 throws `FORBIDDEN`, and HTTP 404 throws `NOT_FOUND`.
+
+In Compose, `rememberGetMeAgents`, `rememberGetMeAgent`, `rememberUpdateMeAgent`, `rememberDeleteMeAgent`, `rememberMeAgentSuspension`, and `rememberSuspendAllMeAgents` wrap these methods. They take no `fetcher`.
+
 ## Error Handling
 
 All suspending methods throw `IAMException` on failure. Catch it to handle errors:
