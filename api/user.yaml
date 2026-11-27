@@ -2373,7 +2373,7 @@ paths:
                   defaultValue: "Grant type not allowed"
                 description:
                   key: "error.agentservice.grant_type_not_allowed_for_personal_agent_description"
-                  defaultValue: "A personal agent can only use the authorization code, CIBA, and refresh token grants"
+                  defaultValue: "A personal agent can only use the authorization code, CIBA, device code, and refresh token grants"
         "401":
           description: No user access token
           content:
@@ -4456,8 +4456,10 @@ components:
           items:
             type: string
           description: |
-            For a personal agent, a subset of `authorization_code`, `urn:openid:params:grant-type:ciba` and
-            `refresh_token`. An empty list removes every grant, so the agent gets no tokens until one is added.
+            For a personal agent, a subset of `authorization_code`, `urn:openid:params:grant-type:ciba`,
+            `urn:ietf:params:oauth:grant-type:device_code` and `refresh_token`. The device code grant needs the Device
+            Grant flow an administrator assigned, so it is refused on an agent that has none, and removing the grant
+            removes the flow. An empty list removes every grant, so the agent gets no tokens until one is added.
         redirectUris:
           type: array
           items:
